@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.2
+
+- New sounds in the style of an old terminal, synthesised: mechanical key clicks (three variants),
+  relay chunk on select, a tick per printed character, CRT power-on thunk with warm-up sweep and
+  faint high whine, power-off collapse, low error buzz
+- Text prints faster at NORMAL speed, so booting takes about half as long
+- The HTML simulator uses the same sound recipes, so both sound the same
+
 ## 2.0.1
 
 Stability and speed, no new features.

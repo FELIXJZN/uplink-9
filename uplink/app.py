@@ -17,7 +17,7 @@ from . import __version__, audio, sound, storage, system, updater, webhooks
 from .engine import Engine, Input, Line, Log, Opt, View
 from .tapes import BUILTIN_TAPES
 
-SPEED = {"SLOW": 0.06, "NORMAL": 0.025, "FAST": 0.01, "INSTANT": 0}
+SPEED = {"SLOW": 0.04, "NORMAL": 0.015, "FAST": 0.006, "INSTANT": 0}
 
 
 def bar(p: float, w: int = 16) -> str:
@@ -119,8 +119,8 @@ class Uplink(Engine):
             target = b["todo"][0]
             if len(b["cur"]) < len(target):
                 b["cur"] = target[: len(b["cur"]) + 1]
-                if len(b["cur"]) % 3 == 0:
-                    self.sfx("click")
+                if len(b["cur"]) % 2 == 0:
+                    self.sfx("type")
             else:
                 b["lines"].append(target)
                 b["todo"].pop(0)
@@ -1135,6 +1135,8 @@ class Uplink(Engine):
                 elif st["ci"] < len(lines[st["li"]]):
                     st["ci"] += 1
                     st["typed"] += 1
+                    if st["ci"] % 2 == 0:
+                        self.sfx("type")
                 elif st["tick"] % 12 == 0:
                     st["li"] += 1
                     st["ci"] = 0
@@ -1554,7 +1556,7 @@ class Uplink(Engine):
                                                                       lambda: self.show(self.power)), style="warn"))
             items.append(Opt("REBOOT DEVICE", lambda: self.do_power("reboot")))
         items.append(Opt("RESTART TERMINAL", lambda: self.exit("restart")))
-        items.append(Opt("EXIT TO SHELL", lambda: self.exit("shell")))
+        items.append(Opt("EXIT TO SHELL", lambda: (self.sfx("off"), self.exit("shell"))))
         return View("power", "POWER", items)
 
     def do_power(self, action: str) -> None:
@@ -1562,6 +1564,7 @@ class Uplink(Engine):
             if d.mountpoint:
                 system.unmount(d)
         self.toast("GOODBYE.")
+        self.sfx("off")
         ok, out = system.power(action)
         if not ok:
             self.toast("FAILED: " + (out.splitlines()[-1][:50] if out else "?"), 8)
