@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import datetime
 import getpass
+import json
 import os
 import shutil
 import subprocess
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import __version__, audio, sound, storage, system, updater, webhooks
@@ -56,10 +58,16 @@ class Uplink(Engine):
         self._ul_stop.set()
 
     def collect_boot_facts(self):
-        info = dict(system.sysinfo())
-        drives = system.list_drives()
-        ts_state = system.tailscale_status()[0]
-        self.mic_ok = audio.can_record()
+        # run the slow checks side by side so a missing network can't stall the boot
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            f_info = pool.submit(system.sysinfo)
+            f_drives = pool.submit(system.list_drives)
+            f_ts = pool.submit(system.tailscale_status)
+            f_mic = pool.submit(audio.can_record)
+            info = dict(f_info.result())
+            drives = f_drives.result()
+            ts_state = f_ts.result()[0]
+            self.mic_ok = f_mic.result()
         user = (os.environ.get("USER") or getpass.getuser() or "USER").upper()
         return [
             "4RDEN INDUSTRIES UNIFIED OPERATING SYSTEM",
@@ -84,6 +92,8 @@ class Uplink(Engine):
                     on_enter=self.finish_boot, back=lambda: None)
 
     def start_boot_animation(self, lines) -> None:
+        if getattr(self, "_ul_booted", False):
+            return  # boot was skipped with ENTER before the checks finished
         if isinstance(lines, Exception):
             lines = ["4RDEN INDUSTRIES UNIFIED OPERATING SYSTEM", f"FIRMWARE V{__version__}", "", "BOOT CHECK FAILED: " + str(lines)]
         self.sfx("hum")
@@ -97,6 +107,9 @@ class Uplink(Engine):
 
         def step():
             b = self._ul_boot
+            if getattr(self, "_ul_booted", False):
+                self.stop_timers()
+                return
             if not b["todo"]:
                 b["cur"] = None
                 self.redraw()
@@ -124,6 +137,12 @@ class Uplink(Engine):
         self.show(self.main)
         if self.after_update:
             self.toast(f"UPDATED TO V{__version__}")
+        if storage.LOAD_PROBLEMS:
+            problems = list(storage.LOAD_PROBLEMS)
+            storage.LOAD_PROBLEMS.clear()
+            self.sfx("buzz")
+            self.message("SYSTEM // CHECK", ["SOME SAVED SETTINGS NEEDED FIXING:"] + [Line(p_, "dim") for p_ in problems],
+                         lambda: self.show(self.main), "warn")
         self.hook("boot", f"booted, firmware v{__version__}")
         threading.Thread(target=self.usb_loop, daemon=True).start()
         threading.Thread(target=self.node_loop, daemon=True).start()
@@ -141,7 +160,7 @@ class Uplink(Engine):
 
     def hook(self, event: str, summary: str, data: dict | None = None, exclude: str = "") -> None:
         webhooks.fire(self.cfg["webhooks"], event, summary, data, self.cfg["device_name"], exclude,
-                      on_done=lambda: self.call_from_thread(self.cfg.save))
+                      on_done=lambda: self.ui(self.cfg.save))
 
     # ================================================================ main
     def main(self) -> View:
@@ -247,21 +266,16 @@ class Uplink(Engine):
         elif parent_ok:
             items.append(Opt("[ THIS FOLDER... ]", lambda: self.show(lambda: self.file_menu(path)), "COPY, MOVE, DELETE"))
         try:
-            entries = sorted((e for e in os.scandir(path) if not e.name.startswith(".")),
-                             key=lambda e: (not e.is_dir(follow_symlinks=False), e.name.lower()))
+            entries = self.list_dir(path)
         except OSError as e:
             entries = []
             items.append(Line("CANNOT READ: " + (e.strerror or str(e)).upper(), "bad"))
-        for e in entries[:500]:
-            try:
-                is_dir = e.is_dir()
-                size = "DIR" if is_dir else system.human(e.stat().st_size)
-            except OSError:
-                is_dir, size = False, "?"
-            p = Path(e.path)
+        if len(entries) > 500:
+            items.append(Line(f"SHOWING THE FIRST 500 OF {len(entries)}.", "dim"))
+        for name, is_dir, size, p in entries[:500]:
             if dest and not is_dir:
                 continue
-            items.append(Opt(e.name + ("/" if is_dir else ""),
+            items.append(Opt(name + ("/" if is_dir else ""),
                              (lambda p=p: self.open_dir(p)) if is_dir else (lambda p=p: self.show(lambda: self.file_menu(p))),
                              size, raw=True))
         if not dest:
@@ -270,6 +284,30 @@ class Uplink(Engine):
         back = (lambda: self.open_dir(path.parent)) if parent_ok else (lambda: self.show(self.file_roots))
         return View("browse", "FILES // " + (path.name or str(path)), items, back=back,
                     footer=(f"{len(entries)} ITEMS", "[ESC] UP"))
+
+    def list_dir(self, path: Path) -> list:
+        """Directory listing, cached until the folder changes (or 5 s pass) so redraws stay cheap."""
+        cache = self.__dict__.setdefault("_ul_dircache", {})
+        mtime = os.stat(path).st_mtime_ns
+        hit = cache.get(str(path))
+        if hit and hit[0] == mtime and time.monotonic() - hit[1] < 5:
+            return hit[2]
+        rows = []
+        with os.scandir(path) as it:
+            for e in it:
+                if e.name.startswith("."):
+                    continue
+                try:
+                    is_dir = e.is_dir()
+                    size = "DIR" if is_dir else system.human(e.stat().st_size)
+                except OSError:
+                    is_dir, size = False, "?"
+                rows.append((e.name, is_dir, size, Path(e.path)))
+        rows.sort(key=lambda r: (not r[1], r[0].lower()))
+        if len(cache) > 50:
+            cache.clear()
+        cache[str(path)] = (mtime, time.monotonic(), rows)
+        return rows
 
     def file_menu(self, p: Path) -> View:
         try:
@@ -344,12 +382,22 @@ class Uplink(Engine):
                 except OSError:
                     pass
             for f, t in files:
+                if not f.exists():          # broken link: skip it rather than fail the whole copy
+                    job["skipped"] = job.get("skipped", 0) + 1
+                    continue
                 t.parent.mkdir(parents=True, exist_ok=True)
-                with open(f, "rb") as a, open(t, "wb") as b:
-                    while chunk := a.read(1024 * 1024):
-                        b.write(chunk)
-                        job["done"] += len(chunk)
-                shutil.copystat(f, t, follow_symlinks=False)
+                try:
+                    with open(f, "rb") as a, open(t, "wb") as b:
+                        while chunk := a.read(1024 * 1024):
+                            b.write(chunk)
+                            job["done"] += len(chunk)
+                except BaseException:
+                    t.unlink(missing_ok=True)   # never leave a half-written file behind
+                    raise
+                try:
+                    shutil.copystat(f, t)
+                except OSError:
+                    pass                        # FAT/exFAT sticks can't keep all permissions
             os.sync() if hasattr(os, "sync") else None
             if mode == "move":
                 shutil.rmtree(src) if src.is_dir() else src.unlink()
@@ -373,7 +421,10 @@ class Uplink(Engine):
             if job["error"]:
                 items += [Line(""), Line("FAILED: " + job["error"], "bad")]
             elif job["finished"]:
-                items += [Line(""), Line("DONE. SAFE TO REMOVE USB." if "/media/" in str(dest_dir) or "/run/media" in str(dest_dir) else "DONE.")]
+                on_usb = any(d.mountpoint and str(dest_dir).startswith(d.mountpoint) for d in self.drives)
+                items += [Line(""), Line("DONE." + (f" SKIPPED {job['skipped']} BROKEN LINKS." if job.get("skipped") else ""))]
+                if on_usb:
+                    items.append(Line("EJECT THE DRIVE IN USB DRIVES BEFORE UNPLUGGING IT.", "dim"))
             if job["finished"]:
                 items += [Opt("OPEN DESTINATION", lambda: self.open_dir(dest_dir)), Opt("MAIN MENU", lambda: self.show(self.main))]
             return View("copy", "FILES // " + mode.upper(), items, locked=not job["finished"],
@@ -475,6 +526,10 @@ class Uplink(Engine):
 
         def finish():
             lines = st["lines"] + ([st["buf"]] if st["buf"] else [])
+            if not any(l.strip() for l in lines):
+                self.toast("NOTHING TYPED, NOTHING SAVED")
+                back()
+                return
             on_save(lines)
 
         self.show(lambda: View("editor", title, [Log([Line(l) for l in st["lines"]], top=True), Input("", st["buf"])],
@@ -508,8 +563,13 @@ class Uplink(Engine):
 
         def screen():
             page = max(1, self.body_h - 1)
-            shown = lines[st["off"]: st["off"] + page]
-            return View("viewer", "VIEW // " + p.name, [Line(l[:400]) for l in shown],
+            width = max(10, self.term.content_size.width if hasattr(self, "term") else 60)
+            rows: list[str] = []
+            i = st["off"]
+            while i < len(lines) and len(rows) < page:   # wrap long lines so nothing falls off the bottom
+                rows += self._wrap(lines[i][:2000], width)
+                i += 1
+            return View("viewer", "VIEW // " + p.name, [Line(r) for r in rows[:page]],
                         footer=(f"LINE {st['off'] + 1}/{len(lines)}", "[▲▼] SCROLL [ESC] BACK"),
                         back=lambda: self.show(lambda: self.file_menu(p)), on_key=key, on_enter=lambda: None)
         self.show(screen)
@@ -523,13 +583,13 @@ class Uplink(Engine):
             new = {d.path: d for d in drives}
             if first:
                 first = False
-                self.call_from_thread(self.set_drives, drives, [], [])
+                self.ui(self.set_drives, drives, [], [])
                 continue
             added = [d for p, d in new.items() if p not in old]
             removed = [d for p, d in old.items() if p not in new]
             changed = added or removed or any(new[p].mountpoint != old[p].mountpoint for p in new if p in old)
             if changed:
-                self.call_from_thread(self.set_drives, drives, added, removed)
+                self.ui(self.set_drives, drives, added, removed)
 
     def set_drives(self, drives, added, removed) -> None:
         self.drives = drives
@@ -578,7 +638,12 @@ class Uplink(Engine):
         return View("usb", "USB // DRIVES", items, footer=(f"AUTO-MOUNT {self.cfg['usb_automount']}", "[ESC] BACK"))
 
     def drive(self, d: system.Drive) -> View:
-        d = next((x for x in self.drives if x.path == d.path), d)
+        current = next((x for x in self.drives if x.path == d.path), None)
+        if current is None:
+            return View("drive", "USB // " + d.name, [Line("THIS DRIVE WAS REMOVED.", "warn"), Line(""),
+                                                       Opt("BACK TO USB DRIVES", lambda: self.show(self.usb))],
+                        back=lambda: self.show(self.usb))
+        d = current
         items = [Line(d.name), Line(f"{d.path} · {d.fstype.upper()} · {system.human(d.size)}", "dim"),
                  Line("MOUNTED AT " + d.mountpoint if d.mountpoint else "NOT MOUNTED", "dim" if d.mountpoint else "warn")]
         if d.mountpoint:
@@ -656,23 +721,20 @@ class Uplink(Engine):
 
         def work():
             try:
-                proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+                proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             except FileNotFoundError:
                 job["out"].append(args[0] + " is not installed.")
                 return False
             job["proc"] = proc
             buf = ""
+            fd = proc.stdout.fileno()
             while True:
-                ch = proc.stdout.read(1)
-                if not ch:
+                chunk = os.read(fd, 4096)
+                if not chunk:
                     break
-                if ch in "\r\n":
-                    if buf.strip():
-                        job["out"].append(buf.strip())
-                        job["out"] = job["out"][-200:]
-                    buf = ""
-                else:
-                    buf += ch
+                buf += chunk.decode(errors="replace").replace("\r", "\n")
+                *lines, buf = buf.split("\n")
+                job["out"] = (job["out"] + [l.strip() for l in lines if l.strip()])[-200:]
             if buf.strip():
                 job["out"].append(buf.strip())
             return proc.wait() == 0
@@ -796,8 +858,7 @@ class Uplink(Engine):
                     m["status"] = "SENT" if ok else "FAILED"
                     if ok and h["format"] == "NTFY":
                         try:
-                            import json as _j
-                            t.setdefault("sent_ids", []).append(_j.loads(result[2]).get("id", ""))
+                            t.setdefault("sent_ids", []).append(json.loads(result[2]).get("id", ""))
                             t["sent_ids"] = t["sent_ids"][-50:]
                         except ValueError:
                             pass
@@ -827,7 +888,7 @@ class Uplink(Engine):
                 if msgs:
                     t["since"] = msgs[-1]["id"]
                 if new:
-                    self.call_from_thread(self.receive, t, new)
+                    self.ui(self.receive, t, new)
 
     def receive(self, t: dict, new: list) -> None:
         for m in new:
@@ -847,10 +908,12 @@ class Uplink(Engine):
     def node_loop(self) -> None:
         first = True
         while not self._ul_stop.wait(0 if first else 20):
-            for n in list(self.cfg["nodes"]):
-                self.ping_node(n, notify=not first)
+            nodes = list(self.cfg["nodes"])
+            if nodes:
+                with ThreadPoolExecutor(max_workers=min(8, len(nodes))) as pool:
+                    list(pool.map(lambda n: self.ping_node(n, notify=not first), nodes))
             first = False
-            self.call_from_thread(lambda: self.view and self.view.id in ("main", "nodes", "node") and self.redraw())
+            self.ui(lambda: self.view and self.view.id in ("main", "nodes", "node") and self.redraw())
 
     def ping_node(self, n: dict, notify: bool = True) -> None:
         lat = system.ping(n["host"])
@@ -862,7 +925,7 @@ class Uplink(Engine):
             ev = "node.up" if st["up"] else "node.down"
             self.hook(ev, f"{n['name']} is {'online' if st['up'] else 'OFFLINE'}", {"node": n["name"], "host": n["host"]})
             if not st["up"]:
-                self.call_from_thread(self.toast, f"{n['name']} WENT OFFLINE")
+                self.ui(self.toast, f"{n['name']} WENT OFFLINE")
 
     def nodes(self) -> View:
         items = [Line("NAME         HOST            STATE", "dim")]
@@ -1007,7 +1070,8 @@ class Uplink(Engine):
             (out / f"{base}.txt").write_text("\n".join(t.get("lines", [])) + "\n", encoding="utf-8")
             if t.get("audio") and Path(t["audio"]).exists():
                 shutil.copy2(t["audio"], out / f"{base}.wav")
-            os.sync()
+            if hasattr(os, "sync"):
+                os.sync()
             return str(out)
 
         def done(r):
@@ -1180,6 +1244,11 @@ class Uplink(Engine):
             else:
                 level = 60 if time.monotonic() - st["last_key"] < .5 else 8
             rec_style = "bad" if (self.blink_on or self.plain) else "dim"
+            if rec and rec.error:
+                return View("rec", "HOLOTAPE // RECORDING", [
+                    Line("MICROPHONE STOPPED: " + rec.error.upper()[:80], "bad"), Line("YOUR TYPED LINES ARE KEPT.", "dim"),
+                    Log([Line(l) for l in st["lines"]], top=True), Input("", st["buf"]),
+                ], footer=("[ENTER] NEXT LINE", "[ESC] STOP & SAVE"), back=stop, on_enter=enter, on_char=char, on_backspace=backspace)
             return View("rec", "HOLOTAPE // RECORDING", [
                 Line("● REC  " + ts(secs) + ("  MIC" if rec else "  TEXT ONLY"), rec_style),
                 Line(f"LEVEL [{bar(level, 14)}]"),
@@ -1431,11 +1500,11 @@ class Uplink(Engine):
             info = updater.check(branch)                       # downloading
             if not info.get("ok"):
                 return False, info.get("error", "FETCH FAILED"), ""
-            self.call_from_thread(lambda: (st.update(ph=1), self.redraw()))
+            self.ui(lambda: (st.update(ph=1), self.redraw()))
             if updater.dirty():                                 # verifying
                 return False, "LOCAL CHANGES FOUND. COMMIT OR DISCARD THEM FIRST.", ""
             time.sleep(0.4)
-            self.call_from_thread(lambda: (st.update(ph=2), self.redraw()))
+            self.ui(lambda: (st.update(ph=2), self.redraw()))
             ok, msg, prev = updater.install(branch)             # installing
             if ok:
                 self.cfg["previous_commit"] = prev

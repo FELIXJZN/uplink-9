@@ -146,7 +146,7 @@ def tailscale_status():
     """Returns (state, ip, peers) where peers is a list of (hostname, online)."""
     if not have("tailscale"):
         return "NOT INSTALLED", "", []
-    ok, out = run(["tailscale", "status", "--json"], timeout=8)
+    ok, out = run(["tailscale", "status", "--json"], timeout=5)
     try:
         data = json.loads(out)
     except ValueError:

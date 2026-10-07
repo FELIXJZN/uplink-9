@@ -5,8 +5,10 @@ when state changes, and re-renders the cached view on timer ticks (clock, cursor
 """
 from __future__ import annotations
 
+import os
 import textwrap
 import time
+import traceback
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -16,7 +18,12 @@ from textual.app import App, ComposeResult
 from textual.widgets import Static
 
 from . import sound
-from .storage import Config
+from .storage import DATA_DIR, Config
+
+# The Linux console font lacks a few symbols; swap them for ASCII there.
+CONSOLE = os.environ.get("TERM") == "linux"
+CONSOLE_GLYPHS = str.maketrans({"●": "*", "•": "*", "♪": "~", "▲": "^", "▼": "v", "·": "-", "→": ">"})
+CRASH_LOG = DATA_DIR / "crash.log"
 
 PALETTES = {
     "GREEN": ("#3dff7a", "#1f8a45"),
@@ -98,6 +105,7 @@ class Engine(App):
         self.toast_until = 0.0
         self.row_map: dict[int, int] = {}
         self._ul_timers = []
+        self._ul_sig = None
 
     # ------------------------------------------------------------ settings helpers
     @property
@@ -138,14 +146,51 @@ class Engine(App):
         self.render_view()
 
     # ------------------------------------------------------------ navigation
+    # ------------------------------------------------------------ crash protection
+    def guard(self, fn: Callable) -> Callable:
+        """Wrap a callback so an error shows an error screen instead of closing the terminal."""
+        def wrapped(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except Exception as e:
+                self.fail(e)
+        return wrapped
+
+    def fail(self, e: Exception) -> None:
+        try:
+            CRASH_LOG.parent.mkdir(parents=True, exist_ok=True)
+            with open(CRASH_LOG, "a", encoding="utf-8") as f:
+                f.write(time.strftime("\n=== %Y-%m-%d %H:%M:%S ===\n"))
+                f.write("".join(traceback.format_exception(type(e), e, e.__traceback__)))
+        except OSError:
+            pass
+        self.stop_timers()
+        self.sfx("buzz")
+        msg = f"{type(e).__name__}: {e}"[:200]
+        self.view_fn = lambda: View("error", "SYSTEM // ERROR", [
+            Line("SOMETHING WENT WRONG. THE TERMINAL IS STILL RUNNING.", "warn"), Line(""),
+            Line(msg, "dim"), Line(""), Line("DETAILS SAVED TO " + str(CRASH_LOG), "dim"), Line(""),
+            Opt("MAIN MENU", lambda: self.show(self.main)),
+        ], back=lambda: self.show(self.main))
+        self.sel = 0
+        self.view = self.view_fn()
+        self.render_view()
+
+    def ui(self, fn: Callable, *args) -> None:
+        """Run fn on the UI thread from a background thread. Safe while the app is shutting down."""
+        try:
+            self.call_from_thread(self.guard(fn), *args)
+        except RuntimeError:
+            pass
+
     def every(self, seconds: float, fn: Callable):
         """A timer that belongs to the current screen and stops when the screen changes."""
-        t = self.set_interval(seconds, fn)
+        t = self.set_interval(seconds, self.guard(fn))
         self._ul_timers.append(t)
         return t
 
     def later(self, seconds: float, fn: Callable):
-        t = self.set_timer(seconds, fn)
+        t = self.set_timer(seconds, self.guard(fn))
         self._ul_timers.append(t)
         return t
 
@@ -165,7 +210,11 @@ class Engine(App):
     def redraw(self) -> None:
         if not self.view_fn:
             return
-        self.view = self.view_fn()
+        try:
+            self.view = self.view_fn()
+        except Exception as e:
+            self.fail(e)
+            return
         n = len(self.view.opts)
         self.sel = max(0, min(self.sel, n - 1)) if n else 0
         self.render_view()
@@ -183,7 +232,7 @@ class Engine(App):
             except Exception as e:  # keep the terminal alive whatever happens
                 result = e
             if done:
-                self.call_from_thread(done, result)
+                self.ui(done, result)
         self.run_worker(runner, thread=True, exclusive=False)
 
     # ------------------------------------------------------------ rendering
@@ -265,8 +314,15 @@ class Engine(App):
 
         top = len(head) + len(toast)
         self.row_map = {top + y: o for y, (_, o) in enumerate(shown) if o is not None}
+        rows_out = head + toast + [r for r, _ in shown] + [Text("")] * (body_h - len(shown)) + foot
+        sig = (W, H, tuple((t.plain, str(t.style)) for t in rows_out))
+        if sig == self._ul_sig:
+            return  # nothing changed: skip the terminal write
+        self._ul_sig = sig
         out = Text()
-        for t in head + toast + [r for r, _ in shown] + [Text("")] * (body_h - len(shown)) + foot:
+        for t in rows_out:
+            if CONSOLE:
+                t = Text(t.plain.translate(CONSOLE_GLYPHS), style=t.style)
             out.append_text(t)
             out.append("\n")
         out.rstrip()
@@ -313,14 +369,19 @@ class Engine(App):
             self.show(self.main)
 
     def on_key(self, event: events.Key) -> None:
-        v = self.view
-        if v is None:
+        if self.view is None:
             return
-        key, ch = event.key, event.character
-        if self.fx("key_clicks"):
-            sound.play("click")
         event.stop()
         event.prevent_default()
+        if self.fx("key_clicks"):
+            sound.play("click")
+        try:
+            self.handle_key(event.key, event.character, event.is_printable)
+        except Exception as e:
+            self.fail(e)
+
+    def handle_key(self, key: str, ch, printable: bool) -> None:
+        v = self.view
         if v.typing:
             if key == "enter":
                 v.on_enter and v.on_enter()
@@ -330,7 +391,7 @@ class Engine(App):
                 if v.on_backspace and v.on_backspace():
                     return
                 self.go_back()
-            elif ch and event.is_printable and v.on_char:
+            elif ch and printable and v.on_char:
                 v.on_char(ch)
             return
         if v.on_key and v.on_key(key):
@@ -352,12 +413,15 @@ class Engine(App):
             self.go_back()
 
     def on_click(self, event: events.Click) -> None:
-        o = self.row_map.get(event.y - 1)  # 1 = top padding
-        if o is not None:
-            self.sel = o
-            self.activate()
-        elif self.view and self.view.on_enter:
-            self.view.on_enter()
+        try:
+            o = self.row_map.get(event.y - 1)  # 1 = top padding
+            if o is not None:
+                self.sel = o
+                self.activate()
+            elif self.view and self.view.on_enter:
+                self.view.on_enter()
+        except Exception as e:
+            self.fail(e)
 
     def main(self) -> View:  # overridden by the app
         return View("main", "MAIN")

@@ -72,7 +72,19 @@ if [ "\${1:-}" = "--crt" ]; then
   shift
   exec cage -- cool-retro-term --fullscreen -e "\$0" "\$@"
 fi
-cd "$REPO" && exec "$REPO/.venv/bin/python" -m uplink "\$@"
+cd "$REPO" || exit 1
+# Restart after a crash (up to 3 times in a row); a normal exit drops to the shell.
+crashes=0
+while true; do
+  "$REPO/.venv/bin/python" -m uplink "\$@" && exit 0
+  crashes=\$((crashes + 1))
+  if [ "\$crashes" -ge 3 ]; then
+    echo "Uplink-9 stopped after 3 crashes. Details: ~/.local/share/uplink/crash.log  Type 'uplink' to try again."
+    exit 1
+  fi
+  echo "Uplink-9 crashed. Restarting in 3 seconds (Ctrl+C for a shell)..."
+  sleep 3
+done
 EOF
 chmod +x "$LAUNCHER"
 echo "Installed. Start it with:  uplink"

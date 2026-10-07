@@ -82,6 +82,15 @@ Tapes and messages live in `~/.local/share/uplink`.
 | Page Up / Page Down | Jump |
 | Letters | Type in prompts, messages, notes and tape logs |
 
+## Tests
+
+```bash
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest tests
+```
+
+Run them before pushing an update: every device installs whatever is on `main`.
+
 ## Run on a PC
 
 Windows: double-click `run-windows.bat`. Linux/macOS: `./install.sh` then `uplink`.

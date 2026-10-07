@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.0.1
+
+Stability and speed, no new features.
+
+- An error now shows an error screen and is logged to ~/.local/share/uplink/crash.log instead of closing the terminal
+- The launcher restarts the terminal after a crash (up to 3 times)
+- A typo in config.json is set aside as config.json.broken instead of being overwritten
+- Hand-edited nodes and webhooks with missing fields are repaired instead of crashing
+- Boot checks run side by side: no more long waits without network
+- Pressing ENTER during boot no longer replays the boot over the main menu
+- Nodes are pinged in parallel
+- Faster output for rsync, Taildrop and croc
+- Long lines in the file viewer wrap instead of pushing text off screen
+- An empty note is no longer saved as an empty file
+- Half-copied files are removed if a copy fails; broken links are skipped
+- Copying to USB now says to eject before unplugging
+- Pulling out a stick while its page is open no longer leaves a stale screen
+- ASCII symbols on the Linux console, whose font lacks a few characters
+- Unchanged frames are skipped and folder listings are cached
+- Test suite: python -m pytest tests
+
 ## 2.0.0
 
 - Native terminal app: no browser, boots straight into Uplink-9 on the device's screen

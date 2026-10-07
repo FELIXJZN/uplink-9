@@ -10,7 +10,8 @@ def main() -> int:
     result = app.run()
     if result == "restart":
         updater.restart()          # replaces this process
-    return 0
+    # a crash gives a non-zero code, so the launcher knows to restart instead of dropping to a shell
+    return app.return_code or 0
 
 
 if __name__ == "__main__":

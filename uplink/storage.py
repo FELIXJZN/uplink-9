@@ -44,10 +44,24 @@ DEFAULTS = {
 }
 
 
+LOAD_PROBLEMS: list[str] = []   # shown to the user once the terminal is up
+
+
 def _read(path: Path, default):
+    """Read JSON. A missing file gives the default; a broken one is set aside, never overwritten."""
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return default
+    try:
+        return json.loads(text)
+    except ValueError as e:
+        backup = path.with_name(path.name + ".broken")
+        try:
+            os.replace(path, backup)
+        except OSError:
+            pass
+        LOAD_PROBLEMS.append(f"{path.name} HAD AN ERROR (LINE {getattr(e, 'lineno', '?')}). SAVED AS {backup.name}, USING DEFAULTS.")
         return default
 
 
@@ -63,7 +77,39 @@ class Config(dict):
 
     def __init__(self):
         super().__init__(json.loads(json.dumps(DEFAULTS)))
-        self.update(_read(self.path, {}))
+        data = _read(self.path, {})
+        if isinstance(data, dict):
+            self.update(data)
+        self._clean()
+
+    def _clean(self) -> None:
+        """Repair hand-edited values so a missing field can never crash a screen."""
+        for key, default in DEFAULTS.items():
+            if type(self.get(key)) is not type(default):
+                LOAD_PROBLEMS.append(f"CONFIG: '{key}' HAS THE WRONG TYPE, USING THE DEFAULT.")
+                self[key] = json.loads(json.dumps(default))
+        nodes = []
+        for n in self["nodes"]:
+            if isinstance(n, dict) and n.get("host"):
+                nodes.append({"name": str(n.get("name") or n["host"]).upper()[:12], "host": str(n["host"]),
+                              "role": str(n.get("role", "")).upper(), "mac": str(n.get("mac", ""))})
+            else:
+                LOAD_PROBLEMS.append("CONFIG: SKIPPED A NODE WITHOUT A HOST.")
+        self["nodes"] = nodes
+        from .webhooks import EVENTS, FORMATS  # local import: webhooks imports this package
+        hooks = []
+        for h in self["webhooks"]:
+            if not (isinstance(h, dict) and str(h.get("url", "")).startswith(("http://", "https://"))):
+                LOAD_PROBLEMS.append("CONFIG: SKIPPED A WEBHOOK WITHOUT A VALID URL.")
+                continue
+            hooks.append({
+                "id": str(h.get("id") or os.urandom(4).hex()), "name": str(h.get("name") or "WEBHOOK").upper(),
+                "url": h["url"], "format": h.get("format") if h.get("format") in FORMATS else "JSON",
+                "events": [e for e in h.get("events", EVENTS) if e in EVENTS], "enabled": bool(h.get("enabled", True)),
+                "last": str(h.get("last", "")),
+            })
+        self["webhooks"] = hooks
+        self["rsync_targets"] = [str(t) for t in self["rsync_targets"] if ":" in str(t)]
 
     def save(self) -> None:
         _write(self.path, dict(self))
@@ -77,12 +123,20 @@ class Config(dict):
 
 
 def load_messages():
-    return _read(DATA_DIR / "messages.json", [
-        {"id": "self", "name": "NOTES TO SELF", "hook": "", "msgs": []},
-    ])
+    data = _read(DATA_DIR / "messages.json", None)
+    threads = []
+    for t in data if isinstance(data, list) else []:
+        if isinstance(t, dict) and t.get("name"):
+            t.setdefault("id", os.urandom(4).hex())
+            t.setdefault("hook", "")
+            t["msgs"] = [m for m in t.get("msgs", []) if isinstance(m, dict) and "t" in m]
+            threads.append(t)
+    return threads or [{"id": "self", "name": "NOTES TO SELF", "hook": "", "msgs": []}]
 
 
 def save_messages(threads) -> None:
+    for t in threads:
+        t["msgs"] = t["msgs"][-500:]   # keep the file small
     _write(DATA_DIR / "messages.json", threads)
 
 
@@ -91,7 +145,9 @@ def load_tapes():
     tapes = []
     for p in sorted(TAPES_DIR.glob("*.json")):
         t = _read(p, None)
-        if t:
+        if isinstance(t, dict) and t.get("id") and t.get("name"):
+            t.setdefault("lines", [])
+            t.setdefault("secs", 0)
             t["_path"] = str(p)
             tapes.append(t)
     return tapes
