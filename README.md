@@ -58,7 +58,7 @@ the next admin login asks for a new one.
 **SETTINGS > UPDATE FIRMWARE** checks GitHub, shows what changed, installs, and restarts.
 The app folder is a git clone, so an update is a fast-forward of `main`. **ROLL BACK** returns to the version before the last update.
 
-To release an update: bump `VERSION`, commit, push to `main`. Every device sees it on its next check
+To release an update: bump `VERSION` (for example `0.10-beta` to `0.11-beta`, shown as BETA 0.11), commit, push to `main`. Every device sees it on its next check
 (and at boot if CHECK AT BOOT is on).
 
 ## Webhooks

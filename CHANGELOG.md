@@ -1,5 +1,10 @@
 # Changelog
 
+## Beta 0.10
+
+- Uplink-9 is now numbered as a beta. This is the same code as 2.2.0 below; the earlier
+  numbers are kept here for history. Versions show as BETA 0.10 on the device.
+
 ## 2.2.0
 
 - Field Unit: a wrist-computer mode on the login screen with four tabs

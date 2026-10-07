@@ -13,7 +13,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import __version__, audio, auth, sound, storage, system, updater, webhooks
+from . import __version__, version_label, audio, auth, sound, storage, system, updater, webhooks
 from .engine import ASPECTS, Engine, Input, Line, Log, Opt, View
 from .tapes import BUILTIN_TAPES
 
@@ -98,7 +98,7 @@ class Uplink(Engine):
         user = (os.environ.get("USER") or getpass.getuser() or "USER").upper()
         return [
             "4RDEN INDUSTRIES UNIFIED OPERATING SYSTEM",
-            f"FIRMWARE V{__version__}" + (f" ({updater.commit()})" if updater.commit() else ""),
+            f"FIRMWARE {version_label(__version__)}" + (f" ({updater.commit()})" if updater.commit() else ""),
             "",
             dots("CORE " + info.get("MODEL", "?")[:18], "OK"),
             dots("MEMORY " + info.get("MEMORY", "?"), "OK"),
@@ -122,7 +122,7 @@ class Uplink(Engine):
         if getattr(self, "_ul_booted", False):
             return  # boot was skipped with ENTER before the checks finished
         if isinstance(lines, Exception):
-            lines = ["4RDEN INDUSTRIES UNIFIED OPERATING SYSTEM", f"FIRMWARE V{__version__}", "", "BOOT CHECK FAILED: " + str(lines)]
+            lines = ["4RDEN INDUSTRIES UNIFIED OPERATING SYSTEM", f"FIRMWARE {version_label(__version__)}", "", "BOOT CHECK FAILED: " + str(lines)]
         self.sfx("hum")
         self._ul_boot = {"lines": [], "cur": "", "todo": list(lines)}
         speed = 0 if (self.plain or not self.fx("animations")) else SPEED[self.cfg["text_speed"]]
@@ -166,7 +166,7 @@ class Uplink(Engine):
         else:
             self.enter(self.cfg["default_role"], quiet=True)
         if self.after_update:
-            self.toast(f"UPDATED TO V{__version__}")
+            self.toast(f"UPDATED TO {version_label(__version__)}")
         if storage.LOAD_PROBLEMS:
             problems = list(storage.LOAD_PROBLEMS)
             storage.LOAD_PROBLEMS.clear()
@@ -174,7 +174,7 @@ class Uplink(Engine):
             after = self.login if self.cfg["login_at_boot"] == "ON" else self.main
             self.message("SYSTEM // CHECK", ["SOME SAVED SETTINGS NEEDED FIXING:"] + [Line(p_, "dim") for p_ in problems],
                          lambda: self.show(after), "warn")
-        self.hook("boot", f"booted, firmware v{__version__}")
+        self.hook("boot", f"booted, firmware {version_label(__version__)}")
         threading.Thread(target=self.usb_loop, daemon=True).start()
         threading.Thread(target=self.node_loop, daemon=True).start()
         threading.Thread(target=self.ntfy_loop, daemon=True).start()
@@ -185,7 +185,7 @@ class Uplink(Engine):
         if isinstance(info, dict) and info.get("ok") and info.get("behind"):
             self.update_info = info
             self.sfx("chirp")
-            self.toast(f"FIRMWARE V{info['version']} AVAILABLE: SETTINGS > UPDATE", 6)
+            self.toast(f"FIRMWARE {version_label(info['version'])} AVAILABLE: SETTINGS > UPDATE", 6)
             if self.view and self.view.id == "main":
                 self.show(self.main, keep_sel=True)
 
@@ -467,7 +467,7 @@ class Uplink(Engine):
         up = sum(1 for n in self.cfg["nodes"] if self.node_state.get(n["name"], {}).get("up"))
         unread = sum(t.get("unread", 0) for t in self.threads)
         mounted = sum(1 for d in self.drives if d.mountpoint)
-        fw_tag = f"V{self.update_info['version']} READY" if self.update_info else f"V{__version__}"
+        fw_tag = f"{version_label(self.update_info['version'])} READY" if self.update_info else version_label(__version__)
         return View("main", f"{self.cfg['device_name']} // MAIN", [
             Line("SELECT A FUNCTION:", "dim"),
             Opt("FILES", lambda: self.show(self.file_roots), "BROWSE"),
@@ -1590,7 +1590,7 @@ class Uplink(Engine):
     # ================================================================ settings
     def settings(self) -> View:
         hooks = self.cfg["webhooks"]
-        fw_tag = f"V{self.update_info['version']} READY" if self.update_info else f"V{__version__}"
+        fw_tag = f"{version_label(self.update_info['version'])} READY" if self.update_info else version_label(__version__)
         return View("settings", "SETTINGS // SYSTEM", [
             self.cycle("DISPLAY COLOR", "color", ["GREEN", "AMBER", "WHITE", "BLUE"], self.settings,
                        "GREEN (PLAIN)" if self.plain else ""),
@@ -1784,7 +1784,7 @@ class Uplink(Engine):
     def firmware(self) -> View:
         prev = self.cfg.get("previous_commit")
         items = [
-            Line("INSTALLED: V" + __version__ + (f" ({updater.commit()})" if updater.commit() else "")),
+            Line("INSTALLED: " + version_label(__version__) + (f" ({updater.commit()})" if updater.commit() else "")),
             Line("SOURCE:    " + (updater.remote_url() or "NONE"), "dim"),
             Line("BRANCH:    " + self.cfg["update_branch"].upper(), "dim"), Line(""),
             Opt("CHECK FOR UPDATE", self.check_fw),
@@ -1807,7 +1807,7 @@ class Uplink(Engine):
     def check_fw(self) -> None:
         st = {"dots": 0}
         self.show(lambda: View("checking", "FIRMWARE // CHECK", [
-            Line("INSTALLED: V" + __version__), Line(""), Line("CONTACTING UPDATE SERVER" + "." * (st["dots"] % 4))],
+            Line("INSTALLED: " + version_label(__version__)), Line(""), Line("CONTACTING UPDATE SERVER" + "." * (st["dots"] % 4))],
             footer=("PLEASE WAIT", ""), locked=True, on_enter=lambda: None))
         self.every(0.4, lambda: (st.update(dots=st["dots"] + 1), self.redraw()))
 
@@ -1821,15 +1821,15 @@ class Uplink(Engine):
                 return
             if not info["behind"]:
                 self.update_info = None
-                self.message("FIRMWARE // CHECK", ["YOUR FIRMWARE IS UP TO DATE.", Line(f"V{__version__} · {updater.commit()}", "dim")], back)
+                self.message("FIRMWARE // CHECK", ["YOUR FIRMWARE IS UP TO DATE.", Line(f"{version_label(__version__)} · {updater.commit()}", "dim")], back)
                 return
             self.update_info = info
             self.sfx("chirp")
             changes = [Line("+ " + c.upper(), "dim") for c in info["changes"]]
-            self.show(lambda: View("fwresult", "FIRMWARE // V" + info["version"], [
-                Line(f"UPDATE AVAILABLE: V{__version__} -> V{info['version']}", "warn"),
+            self.show(lambda: View("fwresult", "FIRMWARE // " + version_label(info["version"]), [
+                Line(f"UPDATE AVAILABLE: {version_label(__version__)} -> {version_label(info['version'])}", "warn"),
                 Line(f"{info['behind']} CHANGE{'S' if info['behind'] != 1 else ''}:", "dim"), *changes, Line(""),
-                Opt("INSTALL V" + info["version"], self.install_fw, style="warn"),
+                Opt("INSTALL " + version_label(info["version"]), self.install_fw, style="warn"),
                 Opt("NOT NOW", back),
             ], back=back))
         self.bg(lambda: updater.check(self.cfg["update_branch"]), done)
@@ -1863,7 +1863,7 @@ class Uplink(Engine):
                 self.cfg.save()
                 for h in self.cfg["webhooks"]:
                     if h.get("enabled") and "update.installed" in h.get("events", []):
-                        webhooks.send(h, "update.installed", f"firmware updated to v{info['version']}",
+                        webhooks.send(h, "update.installed", f"firmware updated to {version_label(info['version'])}",
                                       {"from": prev, "version": info["version"]}, self.cfg["device_name"])
             return ok, msg, prev
 
@@ -1893,7 +1893,7 @@ class Uplink(Engine):
         rows = [Line(f"4RDEN INDUSTRIES {self.cfg['device_name']}"), Line("")]
         for k, v in system.sysinfo():
             rows.append(Line(f"{k:<10} {v}"))
-        rows += [Line(f"{'FIRMWARE':<10} V{__version__} {updater.commit()}"),
+        rows += [Line(f"{'FIRMWARE':<10} {version_label(__version__)} {updater.commit()}"),
                  Line(f"{'MIC':<10} {'YES' if self.mic_ok else 'NONE'}"), Line(""),
                  Line("CONFIG " + str(storage.Config.path), "dim"), Line("DATA   " + str(storage.DATA_DIR), "dim")]
         return View("about", "SETTINGS // ABOUT", rows, back=lambda: self.show(self.settings), on_enter=lambda: None)
