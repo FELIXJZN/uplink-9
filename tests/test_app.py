@@ -322,3 +322,28 @@ def test_aspect_ratio_letterboxes(home):
         await pick(app, pilot, "FILES")      # clicks still land on the right rows when letterboxed
         assert app.view.id == "roots"
     run(t)
+
+
+def test_field_unit(home):
+    async def t(app, pilot):
+        await pick(app, pilot, "FIELD UNIT")
+        assert app.view.id == "field" and app.role == "USER"
+        text = lambda: "\n".join(getattr(i, "text", getattr(i, "label", "")) for i in app.view.items)
+        assert "[VITALS]" in text() and "CPU LOAD" in text() and "CONDITION" in text()
+        await pilot.pause(1.2)
+        assert len(app._ul_field["hist"]) >= 2, "vitals keep sampling every second"
+        await pilot.press("right")
+        assert "[CARGO]" in text()
+        await pilot.press("right")
+        assert "[LOGS]" in text() and "BUILD LOG 01" in text()
+        await pick(app, pilot, "BUILD LOG 01")
+        assert app.view.id == "tape"
+        await pilot.press("escape")
+        assert app.view.id == "field" and "[LOGS]" in text(), "ejecting a tape returns to the Field Unit"
+        await pilot.press("left")
+        await pilot.press("left")
+        await pilot.press("left")
+        assert "[SIGNAL]" in text() and "PVE-1" in text()
+        await pilot.press("escape")
+        assert app.view.id == "login"
+    run_login(t)

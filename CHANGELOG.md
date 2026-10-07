@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.2.0
+
+- Field Unit: a wrist-computer mode on the login screen with four tabs
+  - VITALS: battery, CPU temperature and load, memory, storage, uptime, a 32-second load graph
+    and an overall condition, all read live from the device every second
+  - CARGO: internal storage and USB drives with free space, mount and eject
+  - LOGS: holotapes (playback returns to the Field Unit) and the latest messages
+  - SIGNAL: Wi-Fi strength, VPN tunnel and every node with signal bars
+- Runs with user rights; ESC returns to the login screen
+
 ## 2.1.0
 
 - Login at boot: USER or ADMIN. The first admin login sets a password (stored as a salted hash).

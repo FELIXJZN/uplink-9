@@ -196,6 +196,7 @@ class Uplink(Engine):
         items = [Line("4RDEN INDUSTRIES UNIFIED OPERATING SYSTEM"), Line(""), Line("IDENTIFY YOURSELF:", "dim"),
                  Opt("USER", lambda: self.enter("USER"), "STANDARD ACCESS"),
                  Opt("ADMIN", self.admin_login, "FULL ACCESS" if has_pw else "SET A PASSWORD")]
+        items.append(Opt("FIELD UNIT", self.open_field, "WRIST MODE"))
         if self.cfg["soon_show"] == "ON":
             items.append(Opt(self.cfg["soon_name"], lambda: self.show(self.coming_soon), "COMING SOON", "dim"))
         return View("login", f"{self.cfg['device_name']} // LOGIN", items, footer=("", "[ENTER] SELECT"), back=lambda: None)
@@ -285,6 +286,157 @@ class Uplink(Engine):
 
     def lock_tag(self, tag: str = "") -> str:
         return tag if self.role == "ADMIN" else "ADMIN"
+
+    # ================================================================ field unit
+    FIELD_TABS = ["VITALS", "CARGO", "LOGS", "SIGNAL"]
+    SPARK = "▁▂▃▄▅▆▇█"
+
+    def open_field(self, tab: int = 0) -> None:
+        """A wrist-computer view: live readings from this device, one tab at a time. Runs with USER rights."""
+        self.role = "USER"
+        fu = self.__dict__.setdefault("_ul_field", {"tab": 0, "hist": [], "sens": {}})
+        fu["tab"] = tab
+        self.sample_sensors()
+        self.show(self.field)
+        self.every(1.0, lambda: (self.sample_sensors(), self.redraw()))
+        if fu["tab"] == 3:
+            self.refresh_vpn()
+
+    def sample_sensors(self) -> None:
+        fu = self._ul_field
+        fu["sens"] = {"bat": system.battery(), "temp": system.cpu_temp(), "load": system.cpu_load(),
+                      "mem": system.memory(), "up": system.uptime(), "wifi": fu["sens"].get("wifi")}
+        if len(fu["hist"]) % 5 == 0:            # Wi-Fi changes slowly; read it every few seconds
+            fu["sens"]["wifi"] = system.wifi()
+        fu["hist"] = (fu["hist"] + [fu["sens"]["load"]])[-32:]
+
+    def field(self) -> View:
+        fu = self._ul_field
+        tab = fu["tab"]
+        tabs = "  ".join(f"[{t}]" if i == tab else f" {t} " for i, t in enumerate(self.FIELD_TABS))
+        body = [self.field_vitals, self.field_cargo, self.field_logs, self.field_signal][tab]()
+
+        def key(k):
+            if k in ("left", "right", "tab"):
+                fu["tab"] = (tab + (-1 if k == "left" else 1)) % len(self.FIELD_TABS)
+                self.sfx("clack")
+                self.sel = 0
+                if fu["tab"] == 3:
+                    self.refresh_vpn()
+                self.redraw()
+                return True
+            return False
+        bat = fu["sens"].get("bat")
+        right = (f"BAT {bat[0]}%" + ("+" if bat[1] else "")) if bat else "AC"
+        return View("field", "4RDEN FIELD UNIT FU-9", [Line(tabs), Line("")] + body,
+                    footer=("[◄►] TAB", right + "  [ESC] EXIT"), on_key=key, back=self.leave_field,
+                    on_enter=None if any(isinstance(i, Opt) for i in body) else (lambda: None))
+
+    def leave_field(self) -> None:
+        self.sfx("off")
+        self.show(self.login if self.cfg["login_at_boot"] == "ON" else self.main)
+
+    def gauge(self, label: str, pct, text: str, width: int = 14) -> Line:
+        if pct is None:
+            return Line(f"{label:<9} NO SENSOR", "dim")
+        style = "bad" if pct >= 90 else "warn" if pct >= 75 else ""
+        return Line(f"{label:<9} [{bar(pct, width)}] {text}", style)
+
+    def field_vitals(self) -> list:
+        s = self._ul_field["sens"]
+        items = []
+        bat = s.get("bat")
+        if bat:
+            items.append(Line(f"{'BATTERY':<9} [{bar(bat[0], 14)}] {bat[0]}%" + (" CHARGING" if bat[1] else ""),
+                              "bad" if bat[0] < 15 and not bat[1] else ""))
+        else:
+            items.append(Line(f"{'BATTERY':<9} NO SENSOR · ON MAINS", "dim"))
+        t = s.get("temp")
+        items.append(self.gauge("CPU TEMP", None if t is None else min(100, t / 85 * 100), f"{t:.0f}°C" if t is not None else ""))
+        items.append(self.gauge("CPU LOAD", s.get("load", 0), f"{s.get('load', 0):.0f}%"))
+        m = s.get("mem")
+        items.append(self.gauge("MEMORY", None if not m else m[0] / m[1] * 100,
+                                f"{system.human(m[0])}/{system.human(m[1])}" if m else ""))
+        try:
+            du = shutil.disk_usage(Path.home())
+            items.append(self.gauge("STORAGE", du.used / du.total * 100, f"{system.human(du.free)} FREE"))
+        except OSError:
+            pass
+        up = int(s.get("up", 0))
+        items.append(Line(f"{'UPTIME':<9} {up // 86400}D {up % 86400 // 3600:02d}:{up % 3600 // 60:02d}"))
+        items.append(Line(""))
+        hist = self._ul_field["hist"]
+        spark = "".join(self.SPARK[min(7, int(v / 100 * 8))] for v in hist)
+        items.append(Line(f"{'LOAD 32S':<9} {spark}", "dim"))
+        hot = t is not None and t >= 75
+        low = bat and bat[0] < 15 and not bat[1]
+        items.append(Line("CONDITION: " + ("OVERHEATING" if hot else "LOW POWER" if low else "NOMINAL"),
+                          "bad" if (hot or low) else ""))
+        return items
+
+    def field_cargo(self) -> list:
+        items = []
+        try:
+            du = shutil.disk_usage(Path.home())
+            items.append(Line(f"{'INTERNAL':<9} [{bar(du.used / du.total * 100, 14)}] {system.human(du.free)} FREE"))
+        except OSError:
+            pass
+        items.append(Line(""))
+        if not self.drives:
+            items += [Line("NO USB CARGO.", "dim"), Line("PLUG IN A DRIVE TO SEE IT HERE.", "dim")]
+        back = lambda: self.open_field(1)
+        for d in self.drives:
+            if d.mountpoint:
+                try:
+                    du = shutil.disk_usage(d.mountpoint)
+                    items.append(Line(f"{d.name[:9]:<9} [{bar(du.used / du.total * 100, 14)}] {system.human(du.free)} FREE"))
+                except OSError:
+                    items.append(Line(f"{d.name[:9]:<9} MOUNTED"))
+                items.append(Opt("EJECT " + d.name, lambda d=d: self.usb_action(d, system.eject, "SAFE TO REMOVE", after=back),
+                                 system.human(d.size), "warn"))
+            else:
+                items.append(Opt("MOUNT " + d.name, lambda d=d: self.mount_then(d, None), system.human(d.size)))
+        return items
+
+    def field_logs(self) -> list:
+        back = lambda: self.open_field(2)
+        items = [Line("HOLOTAPES", "dim")]
+        for t in self.all_tapes()[-6:]:
+            items.append(Opt(t["name"], lambda t=t: self.play(t, after=back), ts(t.get("secs", 0))))
+        items += [Line(""), Line("LATEST MESSAGES", "dim")]
+        recent = sorted(((m.get("at", 0), t["name"], m) for t in self.threads for m in t["msgs"]), key=lambda x: x[0])[-3:]
+        if not recent:
+            items.append(Line("NONE YET.", "dim"))
+        for _, name, m in recent:
+            items.append(Line(("YOU" if m.get("me") else name.split(" ")[0][:8]) + "> " + m["t"]))
+        return items
+
+    def field_signal(self) -> list:
+        s = self._ul_field["sens"]
+        w = s.get("wifi")
+        items = [Line(f"{'WI-FI':<9} {self.bars(w[0]) if w else '----'} " + (f"{w[0]}% {w[1]}" if w else "NO LINK"),
+                      "" if w else "dim")]
+        v = self.vpn_info
+        items.append(Line(f"{'TUNNEL':<9} " + ((v["active"] + (f" · {v['ip']}" if v["ip"] else "")) if v else "CHECKING...")))
+        items.append(Line(""))
+        for n in self.cfg["nodes"]:
+            st = self.node_state.get(n["name"])
+            if not st:
+                items.append(Line(f"{n['name'][:9]:<9} ....  CHECKING", "dim"))
+            elif st["up"]:
+                q = 100 if st["ms"] < 10 else 75 if st["ms"] < 40 else 50 if st["ms"] < 100 else 25
+                items.append(Line(f"{n['name'][:9]:<9} {self.bars(q)}  {st['ms']:.0f} MS"))
+            else:
+                items.append(Line(f"{n['name'][:9]:<9} ----  OFFLINE", "bad"))
+        items.append(Line(""))
+        items.append(Opt("PING ALL NOW", lambda: (self.toast("PINGING..."),
+                                                  self.bg(lambda: [self.ping_node(n) for n in self.cfg["nodes"]], lambda _: self.redraw()))))
+        return items
+
+    @staticmethod
+    def bars(q: float) -> str:
+        n = 4 if q >= 75 else 3 if q >= 50 else 2 if q >= 25 else 1
+        return "".join("▂▄▆█"[i] if i < n else " " for i in range(4))
 
     # ================================================================ coming soon
     def coming_soon(self) -> View:
@@ -754,7 +906,7 @@ class Uplink(Engine):
             if self.view and self.view.id in ("browse", "file", "viewer") and d.mountpoint and \
                     str(getattr(self, "fb_path", "")).startswith(d.mountpoint):
                 self.show(self.file_roots)
-        if self.view and self.view.id in ("main", "usb", "roots", "drive"):
+        if self.view and self.view.id in ("main", "usb", "roots", "drive", "field"):
             self.redraw()
 
     def mount_then(self, d: system.Drive, then) -> None:
@@ -766,7 +918,7 @@ class Uplink(Engine):
                 self.toast("MOUNTED " + d.name)
                 if then:
                     then(Path(d.mountpoint))
-                elif self.view and self.view.id in ("usb", "drive", "roots", "main"):
+                elif self.view and self.view.id in ("usb", "drive", "roots", "main", "field"):
                     self.redraw()
             else:
                 self.sfx("buzz")
@@ -810,7 +962,7 @@ class Uplink(Engine):
         items.append(Opt("EJECT SAFELY", lambda: self.usb_action(d, system.eject, "SAFE TO REMOVE"), style="warn"))
         return View("drive", "USB // " + d.name, items, back=lambda: self.show(self.usb))
 
-    def usb_action(self, d, fn, ok_text) -> None:
+    def usb_action(self, d, fn, ok_text, after=None) -> None:
         self.toast("WORKING...")
 
         def done(result):
@@ -822,7 +974,7 @@ class Uplink(Engine):
             else:
                 self.sfx("buzz")
                 self.toast("FAILED: " + (out.splitlines()[-1][:50] if out else "?"))
-            self.show(self.usb)
+            (after or (lambda: self.show(self.usb)))()
         self.bg(lambda: fn(d), done)
 
     # ================================================================ transfer (WAN)
@@ -1138,7 +1290,7 @@ class Uplink(Engine):
         def done(info):
             if isinstance(info, dict):
                 self.vpn_info = info
-            if self.view and self.view.id in ("vpn", "main"):
+            if self.view and self.view.id in ("vpn", "main", "field"):
                 self.redraw()
         self.bg(work, done)
 
@@ -1247,7 +1399,7 @@ class Uplink(Engine):
         self.user_tapes = storage.load_tapes()
         self.show(self.deck)
 
-    def play(self, t: dict) -> None:
+    def play(self, t: dict, after=None) -> None:
         lines = t.get("lines", [])
         total = max(1, sum(len(l) for l in lines))
         player = None
@@ -1305,7 +1457,7 @@ class Uplink(Engine):
 
         def toggle():
             if st["done"]:
-                self.play(t)
+                self.play(t, after)
                 return
             st["playing"] = not st["playing"]
             if player:
@@ -1317,7 +1469,10 @@ class Uplink(Engine):
             if player:
                 player.stop()
             self.sfx("clack")
-            self.show(lambda: self.tape_menu(t))
+            if after:
+                after()
+            else:
+                self.show(lambda: self.tape_menu(t))
 
         def screen():
             spin = "|/-\\"

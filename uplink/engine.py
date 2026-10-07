@@ -22,7 +22,8 @@ from .storage import DATA_DIR, Config
 
 # The Linux console font lacks a few symbols; swap them for ASCII there.
 CONSOLE = os.environ.get("TERM") == "linux"
-CONSOLE_GLYPHS = str.maketrans({"●": "*", "•": "*", "♪": "~", "▲": "^", "▼": "v", "·": "-", "→": ">"})
+CONSOLE_GLYPHS = str.maketrans({"●": "*", "•": "*", "♪": "~", "▲": "^", "▼": "v", "·": "-", "→": ">",
+                                "◄": "<", "►": ">", "▁": "_", "▂": ".", "▃": ":", "▅": "=", "▆": "+", "▇": "#"})
 CRASH_LOG = DATA_DIR / "crash.log"
 
 PALETTES = {

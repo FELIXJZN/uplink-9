@@ -214,3 +214,73 @@ def sysinfo() -> list[tuple[str, str]]:
 def power(action: str):
     """action: poweroff or reboot."""
     return run(["systemctl", action], timeout=10)
+
+
+# ---------------------------------------------------------------- sensors (Field Unit)
+def battery():
+    """Returns (percent, charging) or None when the device has no battery sensor."""
+    base = Path("/sys/class/power_supply")
+    try:
+        for d in base.iterdir():
+            try:
+                if (d / "type").read_text().strip() != "Battery":
+                    continue
+                pct = int((d / "capacity").read_text().strip())
+                status = (d / "status").read_text().strip() if (d / "status").exists() else ""
+                return max(0, min(100, pct)), status == "Charging"
+            except (OSError, ValueError):
+                continue
+    except OSError:
+        pass
+    return None
+
+
+def cpu_temp():
+    """CPU temperature in degrees C, or None."""
+    try:
+        for z in sorted(Path("/sys/class/thermal").glob("thermal_zone*")):
+            v = int((z / "temp").read_text().strip())
+            if v > 0:
+                return v / 1000
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def cpu_load() -> float:
+    """1-minute load as a percentage of all cores."""
+    try:
+        return min(100.0, os.getloadavg()[0] / (os.cpu_count() or 1) * 100)
+    except (OSError, AttributeError):
+        return 0.0
+
+
+def memory():
+    """(used_bytes, total_bytes) or None."""
+    try:
+        info = Path("/proc/meminfo").read_text()
+        total = int(re.search(r"MemTotal:\s+(\d+)", info).group(1)) * 1024
+        avail = int(re.search(r"MemAvailable:\s+(\d+)", info).group(1)) * 1024
+        return total - avail, total
+    except (OSError, AttributeError):
+        return None
+
+
+def uptime() -> float:
+    try:
+        return float(Path("/proc/uptime").read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return 0.0
+
+
+def wifi():
+    """(quality_percent, ssid) or None when there is no Wi-Fi link."""
+    try:
+        for line in Path("/proc/net/wireless").read_text().splitlines()[2:]:
+            parts = line.split()
+            quality = float(parts[2].rstrip("."))
+            ssid = run(["iwgetid", "-r"], timeout=2)[1] if have("iwgetid") else ""
+            return max(0, min(100, round(quality / 70 * 100))), ssid
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
