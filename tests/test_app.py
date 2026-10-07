@@ -13,6 +13,7 @@ def run(test, size=(64, 30)):
     """Start the app headless, skip the boot animation, then run test(app, pilot)."""
     async def main():
         app = Uplink()
+        app.cfg["login_at_boot"] = "OFF"       # these tests start as admin; login has its own tests
         async with app.run_test(size=size) as pilot:
             await pilot.pause(0.3)
             await pilot.press("enter")          # skip boot
@@ -53,6 +54,7 @@ def test_boot_skip_race(home):
     """ENTER before the boot checks finish must not replay the boot over the main menu."""
     async def main():
         app = Uplink()
+        app.cfg["login_at_boot"] = "OFF"
         async with app.run_test(size=(64, 30)) as pilot:
             await pilot.press("enter")
             await pilot.pause(2.0)                # boot checks finish meanwhile
@@ -220,4 +222,103 @@ def test_render_speed(home):
         render_ms = (time.perf_counter() - start) / n * 1000
         print(f"\n500-file folder: rebuild {rebuild_ms:.1f} ms, render {render_ms:.1f} ms")
         assert rebuild_ms < 50 and render_ms < 30
+    run(t)
+
+
+# ------------------------------------------------------------------ login and roles
+def run_login(test, admin_pw=""):
+    """Start with login at boot on (the default)."""
+    async def main():
+        from uplink import auth
+        app = Uplink()
+        app.cfg["login_at_boot"] = "ON"
+        app.cfg["admin_pw"] = auth.hash_password(admin_pw) if admin_pw else ""
+        async with app.run_test(size=(64, 30)) as pilot:
+            await pilot.pause(0.3)
+            await pilot.press("enter")
+            await pilot.pause(0.3)
+            assert app.view.id == "login"
+            await test(app, pilot)
+    asyncio.run(main())
+
+
+def test_first_admin_login_sets_password(home):
+    async def t(app, pilot):
+        await pick(app, pilot, "ADMIN")
+        await type_text(pilot, "rack42")
+        await pilot.press("enter")
+        await type_text(pilot, "rack42")
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert app.view.id == "main" and app.role == "ADMIN"
+        assert app.cfg["admin_pw"].startswith("pbkdf2$") and "rack42" not in app.cfg["admin_pw"]
+    run_login(t)
+
+
+def test_wrong_password_locks_terminal(home):
+    async def t(app, pilot):
+        await pick(app, pilot, "ADMIN")
+        for attempt in range(3):
+            assert app.view.id == "prompt"          # a wrong password asks again
+            await type_text(pilot, "nope")
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+        assert app.view.id == "lockout"
+        await pilot.press("escape")
+        assert app.view.id == "lockout", "ESC must not escape the lockout"
+    run_login(t, admin_pw="right")
+
+
+def test_right_password_and_masking(home):
+    async def t(app, pilot):
+        await pick(app, pilot, "ADMIN")
+        await type_text(pilot, "secret")
+        assert "secret" not in str(app.term.render()), "password must be masked on screen"
+        await pilot.press("enter")
+        await pilot.pause(0.3)
+        assert app.view.id == "main" and app.role == "ADMIN"
+    run_login(t, admin_pw="secret")
+
+
+def test_user_is_restricted(home):
+    async def t(app, pilot):
+        await pick(app, pilot, "USER")
+        assert app.role == "USER"
+        await pick(app, pilot, "SETTINGS")
+        await pick(app, pilot, "WEBHOOKS")
+        assert app.view.id == "settings", "a user must not open webhooks"
+        await pilot.press("escape")
+        await pick(app, pilot, "POWER")
+        await pick(app, pilot, "EXIT TO SHELL")
+        assert app.is_running, "a user must not exit to the shell"
+        app.action_quit()
+        await pilot.pause(0.1)
+        assert app.is_running, "Ctrl+Q must not exit for a user"
+        assert all(name != "SYSTEM /" for name, _ in app.roots())
+        await pick(app, pilot, "LOG OUT")
+        assert app.view.id == "login"
+    run_login(t, admin_pw="x1y2")
+
+
+def test_coming_soon_shows_qr(home):
+    async def t(app, pilot):
+        await pick(app, pilot, "CLASSIFIED")
+        assert app.view.id == "soon"
+        await pick(app, pilot, "SHOW QR CODE")
+        text = "\n".join(i.text for i in app.view.items)
+        assert "█" in text and "discord.gg" in text
+        await pilot.press("escape")
+        await pilot.press("escape")
+        assert app.view.id == "login"
+    run_login(t)
+
+
+def test_aspect_ratio_letterboxes(home):
+    async def t(app, pilot):
+        app.cfg["aspect"] = "16:9"
+        app._ul_sig = None
+        app.render_view()
+        assert app.pad_top > 0
+        await pick(app, pilot, "FILES")      # clicks still land on the right rows when letterboxed
+        assert app.view.id == "roots"
     run(t)

@@ -31,6 +31,14 @@ DEFAULTS = {
     "update_check_boot": "ON",
     "update_branch": "main",
     "device_name": "UPLINK-9",
+    "aspect": "FILL",
+    # login
+    "login_at_boot": "ON",
+    "default_role": "ADMIN",      # used when login at boot is off
+    "admin_pw": "",               # pbkdf2 hash, never the password itself
+    "soon_show": "ON",
+    "soon_name": "CLASSIFIED",
+    "discord_invite": "https://discord.gg/YOUR-INVITE",
     # networking
     "nodes": [
         {"name": "PVE-1", "host": "pve-1", "role": "ROUTER", "mac": ""},
@@ -115,7 +123,8 @@ class Config(dict):
         _write(self.path, dict(self))
 
     def reset(self) -> None:
-        keep = {k: self[k] for k in ("nodes", "rsync_targets", "webhooks", "previous_commit", "device_name")}
+        keep = {k: self[k] for k in ("nodes", "rsync_targets", "webhooks", "previous_commit", "device_name",
+                                     "admin_pw", "soon_name", "discord_invite")}
         self.clear()
         self.update(json.loads(json.dumps(DEFAULTS)))
         self.update(keep)

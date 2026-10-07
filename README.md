@@ -41,6 +41,18 @@ sudo dpkg-reconfigure console-setup    # pick Terminus, then 16x32
 `uplink --crt` runs the terminal inside cool-retro-term for curved glass and scanlines.
 Needs `sudo apt install cage cool-retro-term`. Plain mode in Accessibility is the opposite: green text only.
 
+## Login
+
+After boot you choose USER or ADMIN. The first ADMIN login asks you to choose a password.
+Users get files, USB, messages, tapes and nodes; admin gets everything, including the shell.
+Change it under **SETTINGS > USERS & LOGIN**, where you can also turn login off.
+
+This locks the terminal, not Linux: give the Linux account its own strong password too,
+because anyone who can SSH in can change the config.
+
+Forgot the admin password? Over SSH, clear `"admin_pw"` in `~/.config/uplink/config.json`;
+the next admin login asks for a new one.
+
 ## Updates
 
 **SETTINGS > UPDATE FIRMWARE** checks GitHub, shows what changed, installs, and restarts.

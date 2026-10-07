@@ -1,1 +1,2 @@
 textual>=0.80
+segno>=1.5

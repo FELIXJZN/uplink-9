@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.1.0
+
+- Login at boot: USER or ADMIN. The first admin login sets a password (stored as a salted hash).
+  Three wrong passwords lock the terminal for 30 seconds.
+- Users can't open webhooks, firmware, users & login, device name or restore defaults, can't switch
+  the VPN, open SSH shells, browse the whole system, restart the terminal or exit to the shell.
+  Ctrl+Q only quits for an admin. Locked items show ADMIN instead of hiding.
+- POWER > LOG OUT returns to the login screen
+- Settings > Aspect ratio: fill, 1:1, 4:3, 16:10 or 16:9; the terminal letterboxes itself
+- A coming-soon option on the login screen with a Discord invite and a scannable QR code;
+  its name and link are set in Settings > Users & login
+- New dependency: segno (QR codes)
+
 ## 2.0.2
 
 - New sounds in the style of an old terminal, synthesised: mechanical key clicks (three variants),

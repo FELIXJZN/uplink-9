@@ -13,8 +13,8 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import __version__, audio, sound, storage, system, updater, webhooks
-from .engine import Engine, Input, Line, Log, Opt, View
+from . import __version__, audio, auth, sound, storage, system, updater, webhooks
+from .engine import ASPECTS, Engine, Input, Line, Log, Opt, View
 from .tapes import BUILTIN_TAPES
 
 SPEED = {"SLOW": 0.04, "NORMAL": 0.015, "FAST": 0.006, "INSTANT": 0}
@@ -32,6 +32,33 @@ def ts(secs: float) -> str:
 
 def dots(label: str, status: str, width: int = 36) -> str:
     return (f"> {label} ").ljust(width, ".") + f" {status}"
+
+
+def qr_rows(text: str) -> list[str]:
+    """A QR code drawn with half-block characters: two module rows per text row.
+    Light modules are lit (green), dark modules are the black screen, so phones read it normally."""
+    try:
+        import segno
+    except ImportError:
+        return []
+    q = segno.make(text, error="m")
+    m = [[bool(v) for v in row] for row in q.matrix]
+    border = 2
+    size = len(m) + border * 2
+    dark = [[False] * size for _ in range(size)]
+    for y, row in enumerate(m):
+        for x, v in enumerate(row):
+            dark[y + border][x + border] = v
+    if size % 2:
+        dark.append([False] * size)
+    out = []
+    for y in range(0, len(dark), 2):
+        line = ""
+        for x in range(size):
+            top, bottom = not dark[y][x], not dark[y + 1][x]
+            line += "█" if top and bottom else "▀" if top else "▄" if bottom else " "
+        out.append(line)
+    return out
 
 
 class Uplink(Engine):
@@ -134,15 +161,19 @@ class Uplink(Engine):
         if getattr(self, "_ul_booted", False):
             return
         self._ul_booted = True
-        self.show(self.main)
+        if self.cfg["login_at_boot"] == "ON":
+            self.show(self.login)
+        else:
+            self.enter(self.cfg["default_role"], quiet=True)
         if self.after_update:
             self.toast(f"UPDATED TO V{__version__}")
         if storage.LOAD_PROBLEMS:
             problems = list(storage.LOAD_PROBLEMS)
             storage.LOAD_PROBLEMS.clear()
             self.sfx("buzz")
+            after = self.login if self.cfg["login_at_boot"] == "ON" else self.main
             self.message("SYSTEM // CHECK", ["SOME SAVED SETTINGS NEEDED FIXING:"] + [Line(p_, "dim") for p_ in problems],
-                         lambda: self.show(self.main), "warn")
+                         lambda: self.show(after), "warn")
         self.hook("boot", f"booted, firmware v{__version__}")
         threading.Thread(target=self.usb_loop, daemon=True).start()
         threading.Thread(target=self.node_loop, daemon=True).start()
@@ -157,6 +188,123 @@ class Uplink(Engine):
             self.toast(f"FIRMWARE V{info['version']} AVAILABLE: SETTINGS > UPDATE", 6)
             if self.view and self.view.id == "main":
                 self.show(self.main, keep_sel=True)
+
+    # ================================================================ login
+    def login(self) -> View:
+        self.role = "USER"   # nobody is admin while the login screen is up
+        has_pw = bool(self.cfg["admin_pw"])
+        items = [Line("4RDEN INDUSTRIES UNIFIED OPERATING SYSTEM"), Line(""), Line("IDENTIFY YOURSELF:", "dim"),
+                 Opt("USER", lambda: self.enter("USER"), "STANDARD ACCESS"),
+                 Opt("ADMIN", self.admin_login, "FULL ACCESS" if has_pw else "SET A PASSWORD")]
+        if self.cfg["soon_show"] == "ON":
+            items.append(Opt(self.cfg["soon_name"], lambda: self.show(self.coming_soon), "COMING SOON", "dim"))
+        return View("login", f"{self.cfg['device_name']} // LOGIN", items, footer=("", "[ENTER] SELECT"), back=lambda: None)
+
+    def enter(self, role: str, quiet: bool = False) -> None:
+        self.role = role if role in ("USER", "ADMIN") else "USER"
+        self.show(self.main)
+        if not quiet:
+            self.sfx("ok")
+            self.toast(f"LOGGED IN AS {self.role}")
+
+    def admin_login(self) -> None:
+        back = lambda: self.show(self.login)
+        if not self.cfg["admin_pw"]:
+            self.set_admin_password(on_done=lambda: self.enter("ADMIN"), back=back)
+            return
+        until = getattr(self, "_ul_locked_until", 0)
+        if time.monotonic() < until:
+            self.show_lockout()
+            return
+
+        def submit(pw):
+            if auth.check_password(pw, self.cfg["admin_pw"]):
+                self._ul_fails = 0
+                self.enter("ADMIN")
+                return
+            self._ul_fails = getattr(self, "_ul_fails", 0) + 1
+            self.sfx("buzz")
+            left = 3 - self._ul_fails
+            if left <= 0:
+                self._ul_fails = 0
+                self._ul_locked_until = time.monotonic() + 30
+                self.show_lockout()
+            else:
+                self.toast(f"ACCESS DENIED. {left} ATTEMPT{'S' if left > 1 else ''} LEFT")
+                self.admin_login()
+        attempts = 3 - getattr(self, "_ul_fails", 0)
+        self.prompt("LOGIN // ADMIN", "ENTER PASSWORD:", submit, back,
+                    hint="ATTEMPTS LEFT: " + " ".join("■" for _ in range(attempts)), mask=True)
+
+    def show_lockout(self) -> None:
+        self.toast_until = 0   # the last "attempts left" message no longer applies
+        def screen():
+            left = max(0, int(self._ul_locked_until - time.monotonic()) + 1)
+            return View("lockout", "LOGIN // LOCKED", [
+                Line("TERMINAL LOCKED", "bad"), Line(""),
+                Line("TOO MANY WRONG PASSWORDS.", "dim"), Line(f"TRY AGAIN IN {left} SECONDS.", "dim"),
+            ], footer=("", ""), locked=True, on_enter=lambda: None)
+
+        def tick():
+            if time.monotonic() >= self._ul_locked_until:
+                self.show(self.login)
+            else:
+                self.redraw()
+        self.show(screen)
+        self.every(0.5, tick)
+
+    def set_admin_password(self, on_done, back) -> None:
+        def first(pw):
+            if len(pw) < 4:
+                self.toast("USE AT LEAST 4 CHARACTERS")
+                return
+
+            def second(pw2):
+                if pw2 != pw:
+                    self.sfx("buzz")
+                    self.toast("THE PASSWORDS DON'T MATCH. TRY AGAIN.")
+                    self.set_admin_password(on_done, back)
+                    return
+                self.cfg["admin_pw"] = auth.hash_password(pw)
+                self.cfg.save()
+                self.toast("ADMIN PASSWORD SAVED")
+                on_done()
+            self.prompt("ADMIN // PASSWORD", "TYPE IT AGAIN:", second, back, mask=True)
+        self.prompt("ADMIN // PASSWORD", "CHOOSE AN ADMIN PASSWORD:", first, back,
+                    hint="AT LEAST 4 CHARACTERS. IT UNLOCKS SETTINGS, FIRMWARE AND THE SHELL.", mask=True)
+
+    def admin_only(self, fn):
+        """Wrap an action so a USER gets a polite refusal instead."""
+        def go():
+            if self.role == "ADMIN":
+                fn()
+            else:
+                self.sfx("buzz")
+                self.toast("ADMIN ONLY. LOG OUT AND LOG IN AS ADMIN.")
+        return go
+
+    def lock_tag(self, tag: str = "") -> str:
+        return tag if self.role == "ADMIN" else "ADMIN"
+
+    # ================================================================ coming soon
+    def coming_soon(self) -> View:
+        return View("soon", self.cfg["soon_name"], [
+            Line(self.cfg["soon_name"]), Line(""),
+            Line("COMING SOON.", "warn"), Line(""),
+            Line("JOIN THE DISCORD FOR NEWS AND EARLY ACCESS:", "dim"),
+            Line(self.cfg["discord_invite"]), Line(""),
+            Opt("SHOW QR CODE", lambda: self.show(self.discord_qr), "SCAN WITH PHONE"),
+            Opt("BACK", self.leave_soon),
+        ], back=self.leave_soon)
+
+    def leave_soon(self) -> None:
+        self.show(self.login)
+
+    def discord_qr(self) -> View:
+        rows = qr_rows(self.cfg["discord_invite"])
+        items = [Line(r) for r in rows] if rows else [Line("QR CODES NEED THE 'SEGNO' PACKAGE.", "warn")]
+        items += [Line(self.cfg["discord_invite"], "dim")]
+        return View("qr", "SCAN TO JOIN", items, back=lambda: self.show(self.coming_soon), on_enter=lambda: None)
 
     def hook(self, event: str, summary: str, data: dict | None = None, exclude: str = "") -> None:
         webhooks.fire(self.cfg["webhooks"], event, summary, data, self.cfg["device_name"], exclude,
@@ -179,7 +327,7 @@ class Uplink(Engine):
             Opt("HOLOTAPE", lambda: self.show(self.deck), f"{len(BUILTIN_TAPES) + len(self.user_tapes)} TAPES"),
             Opt("SETTINGS", lambda: self.show(self.settings), fw_tag, "warn" if self.update_info else ""),
             Opt("POWER", lambda: self.show(self.power)),
-        ], footer=(f"USB:{mounted} MOUNTED" if self.drives else "", "[ENTER] SELECT"), back=lambda: None)
+        ], footer=(self.role + (f" · USB:{mounted}" if self.drives else ""), "[ENTER] SELECT"), back=lambda: None)
 
     # ================================================================ generic screens
     def message(self, title: str, lines: list, back, style: str = "") -> None:
@@ -192,7 +340,7 @@ class Uplink(Engine):
             Opt(no, back), Opt(yes, on_yes, style="warn"),
         ], back=back))
 
-    def prompt(self, title: str, label: str, on_submit, back, initial: str = "", hint: str = "") -> None:
+    def prompt(self, title: str, label: str, on_submit, back, initial: str = "", hint: str = "", mask: bool = False) -> None:
         st = {"buf": initial}
 
         def char(c):
@@ -207,7 +355,7 @@ class Uplink(Engine):
             return False
 
         self.show(lambda: View("prompt", title, [
-            Line(label, "dim"), *( [Line(hint, "dim")] if hint else [] ), Line(""), Input("> ", st["buf"]),
+            Line(label, "dim"), *( [Line(hint, "dim")] if hint else [] ), Line(""), Input("> ", st["buf"], mask),
         ], footer=("[ENTER] OK", "[ESC] CANCEL"), back=back,
             on_enter=lambda: on_submit(st["buf"].strip()), on_char=char, on_backspace=backspace))
 
@@ -226,7 +374,8 @@ class Uplink(Engine):
         for d in self.drives:
             if d.mountpoint:
                 r.append(("USB " + d.name, Path(d.mountpoint)))
-        r.append(("SYSTEM /", Path(Path.home().anchor or "/")))
+        if self.role == "ADMIN":
+            r.append(("SYSTEM /", Path(Path.home().anchor or "/")))
         return r
 
     def file_roots(self, mode: str = "browse") -> View:
@@ -954,7 +1103,8 @@ class Uplink(Engine):
             self.bg(lambda: self.ping_node(n), lambda _: self.redraw())
         items.append(Opt("PING NOW", ping_now))
         if system.have("ssh"):
-            items.append(Opt("OPEN SSH SHELL", lambda: self.shell(["ssh", n["host"]])))
+            items.append(Opt("OPEN SSH SHELL", self.admin_only(lambda: self.shell(["ssh", n["host"]])), self.lock_tag(),
+                             "" if self.role == "ADMIN" else "dim"))
         if n.get("mac"):
             def wake():
                 ok, msg = system.wake_on_lan(n["mac"])
@@ -1019,9 +1169,11 @@ class Uplink(Engine):
             Line("ONE TUNNEL AT A TIME.", "dim"),
             Line(f"TAILSCALE: {i['ts']}" + (f" · {i['ip']} · {online} PEERS ONLINE" if i["ip"] else "")),
             Line(f"TWINGATE:  {i['tg']}"), Line(""),
-            Opt(mark("TAILSCALE") + " TAILSCALE", lambda: set_vpn("TAILSCALE"), "" if system.have("tailscale") else "NOT INSTALLED"),
-            Opt(mark("OFF") + " OFF", lambda: set_vpn("OFF")),
-            Opt(mark("TWINGATE") + " TWINGATE", lambda: set_vpn("TWINGATE"), "" if system.have("twingate") else "NOT INSTALLED"),
+            Opt(mark("TAILSCALE") + " TAILSCALE", self.admin_only(lambda: set_vpn("TAILSCALE")),
+                self.lock_tag("" if system.have("tailscale") else "NOT INSTALLED")),
+            Opt(mark("OFF") + " OFF", self.admin_only(lambda: set_vpn("OFF")), self.lock_tag()),
+            Opt(mark("TWINGATE") + " TWINGATE", self.admin_only(lambda: set_vpn("TWINGATE")),
+                self.lock_tag("" if system.have("twingate") else "NOT INSTALLED")),
             Opt("REFRESH", self.refresh_vpn),
         ])
 
@@ -1287,19 +1439,62 @@ class Uplink(Engine):
         return View("settings", "SETTINGS // SYSTEM", [
             self.cycle("DISPLAY COLOR", "color", ["GREEN", "AMBER", "WHITE", "BLUE"], self.settings,
                        "GREEN (PLAIN)" if self.plain else ""),
+            self.cycle("ASPECT RATIO", "aspect", list(ASPECTS), self.settings),
             Opt("ACCESSIBILITY", lambda: self.show(self.accessibility), "PLAIN" if self.plain else "EFFECTS ON"),
-            Opt("WEBHOOKS", lambda: self.show(self.webhooks), f"{sum(1 for h in hooks if h.get('enabled'))} ACTIVE"),
-            self.cycle("USB AUTO-MOUNT", "usb_automount", ["ON", "OFF"], self.settings),
             self.cycle("CLOCK", "clock", ["24H", "12H"], self.settings),
-            Opt("UPDATE FIRMWARE", lambda: self.show(self.firmware), fw_tag, "warn" if self.update_info else ""),
-            Opt("DEVICE NAME", lambda: self.prompt("SETTINGS // NAME", "SHOWN IN THE TITLE BAR AND IN WEBHOOKS",
-                                                   self.set_name, lambda: self.show(self.settings), self.cfg["device_name"]),
-                self.cfg["device_name"]),
-            Opt("RESTORE DEFAULTS", lambda: self.confirm(
-                "CONFIRM", "RESTORE ALL SETTINGS TO DEFAULT?", "WEBHOOKS, NODES, TAPES AND MESSAGES ARE KEPT.",
-                "YES, RESTORE", self.restore_defaults, lambda: self.show(self.settings))),
+            Opt("WEBHOOKS", self.admin_only(lambda: self.show(self.webhooks)),
+                self.lock_tag(f"{sum(1 for h in hooks if h.get('enabled'))} ACTIVE"), self.lock_style()),
+            self.admin_cycle("USB AUTO-MOUNT", "usb_automount", ["ON", "OFF"], self.settings),
+            Opt("UPDATE FIRMWARE", self.admin_only(lambda: self.show(self.firmware)), self.lock_tag(fw_tag),
+                "warn" if self.update_info and self.role == "ADMIN" else self.lock_style()),
+            Opt("USERS & LOGIN", self.admin_only(lambda: self.show(self.users)), self.lock_tag(f"LOGIN {self.cfg['login_at_boot']}"),
+                self.lock_style()),
+            Opt("DEVICE NAME", self.admin_only(lambda: self.prompt("SETTINGS // NAME", "SHOWN IN THE TITLE BAR AND IN WEBHOOKS",
+                                                   self.set_name, lambda: self.show(self.settings), self.cfg["device_name"])),
+                self.lock_tag(self.cfg["device_name"]), self.lock_style()),
+            Opt("RESTORE DEFAULTS", self.admin_only(lambda: self.confirm(
+                "CONFIRM", "RESTORE ALL SETTINGS TO DEFAULT?", "WEBHOOKS, NODES, TAPES, MESSAGES AND THE PASSWORD ARE KEPT.",
+                "YES, RESTORE", self.restore_defaults, lambda: self.show(self.settings))), self.lock_tag(), self.lock_style()),
             Opt("ABOUT THIS DEVICE", lambda: self.show(self.about)),
-        ])
+        ], footer=(self.role, "[ESC] BACK"))
+
+    def lock_style(self) -> str:
+        return "" if self.role == "ADMIN" else "dim"
+
+    def admin_cycle(self, label, key, values, screen) -> Opt:
+        o = self.cycle(label, key, values, screen)
+        return Opt(o.label, self.admin_only(o.go), self.lock_tag(o.tag), self.lock_style())
+
+    def users(self) -> View:
+        u = self.users
+        return View("users", "SETTINGS // USERS & LOGIN", [
+            Line("USER: FILES, USB, MESSAGES, TAPES, NODES.", "dim"),
+            Line("ADMIN: EVERYTHING, INCLUDING THE SHELL.", "dim"), Line(""),
+            self.cycle("LOGIN AT BOOT", "login_at_boot", ["ON", "OFF"], u),
+            self.cycle("ROLE WITHOUT LOGIN", "default_role", ["ADMIN", "USER"], u),
+            Opt("CHANGE ADMIN PASSWORD", lambda: self.set_admin_password(on_done=lambda: self.show(u), back=lambda: self.show(u)),
+                "SET" if self.cfg["admin_pw"] else "NOT SET"),
+            Line(""),
+            self.cycle("COMING-SOON OPTION", "soon_show", ["ON", "OFF"], u),
+            Opt("ITS NAME", lambda: self.prompt("LOGIN // NAME", "NAME ON THE LOGIN SCREEN", self.set_soon_name,
+                                                lambda: self.show(u), self.cfg["soon_name"]), self.cfg["soon_name"]),
+            Opt("DISCORD INVITE", lambda: self.prompt("LOGIN // DISCORD", "INVITE LINK SHOWN WITH THE QR CODE", self.set_invite,
+                                                      lambda: self.show(u), self.cfg["discord_invite"]), "EDIT"),
+        ], back=lambda: self.show(self.settings))
+
+    def set_soon_name(self, v: str) -> None:
+        if v:
+            self.cfg["soon_name"] = v.upper()[:24]
+            self.cfg.save()
+        self.show(self.users)
+
+    def set_invite(self, v: str) -> None:
+        if v:
+            if "://" not in v:
+                v = "https://" + v
+            self.cfg["discord_invite"] = v
+            self.cfg.save()
+        self.show(self.users)
 
     def set_name(self, name: str) -> None:
         if name:
@@ -1555,8 +1750,11 @@ class Uplink(Engine):
                                                                       "YES, SHUT DOWN", lambda: self.do_power("poweroff"),
                                                                       lambda: self.show(self.power)), style="warn"))
             items.append(Opt("REBOOT DEVICE", lambda: self.do_power("reboot")))
-        items.append(Opt("RESTART TERMINAL", lambda: self.exit("restart")))
-        items.append(Opt("EXIT TO SHELL", lambda: (self.sfx("off"), self.exit("shell"))))
+        if self.cfg["login_at_boot"] == "ON":
+            items.append(Opt("LOG OUT", lambda: (self.sfx("clack"), self.show(self.login)), self.role))
+        items.append(Opt("RESTART TERMINAL", self.admin_only(lambda: self.exit("restart")), self.lock_tag(), self.lock_style()))
+        items.append(Opt("EXIT TO SHELL", self.admin_only(lambda: (self.sfx("off"), self.exit("shell"))), self.lock_tag(),
+                         self.lock_style()))
         return View("power", "POWER", items)
 
     def do_power(self, action: str) -> None:

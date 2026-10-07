@@ -61,6 +61,11 @@ class Log:
 class Input:
     prompt: str
     buf: str
+    mask: bool = False       # passwords: show * instead of the letters
+
+
+ASPECTS = {"FILL": None, "1:1": 1.0, "4:3": 4 / 3, "16:10": 16 / 10, "16:9": 16 / 9}
+CELL_RATIO = 2.0             # a terminal cell is about twice as tall as it is wide
 
 
 @dataclass
@@ -106,6 +111,8 @@ class Engine(App):
         self.row_map: dict[int, int] = {}
         self._ul_timers = []
         self._ul_sig = None
+        self.role = "ADMIN"          # USER or ADMIN; set by the login screen
+        self.pad_top = 0
 
     # ------------------------------------------------------------ settings helpers
     @property
@@ -175,6 +182,16 @@ class Engine(App):
         self.sel = 0
         self.view = self.view_fn()
         self.render_view()
+
+    # Ctrl+Q / Ctrl+C would drop to the shell; only an admin may do that
+    def action_quit(self) -> None:
+        if self.role == "ADMIN":
+            self.exit()
+        else:
+            self.toast("LOCKED: ONLY AN ADMIN CAN EXIT")
+
+    def action_help_quit(self) -> None:
+        self.action_quit()
 
     def ui(self, fn: Callable, *args) -> None:
         """Run fn on the UI thread from a background thread. Safe while the app is shutting down."""
@@ -252,6 +269,15 @@ class Engine(App):
         W, H = self.term.content_size.width, self.term.content_size.height
         if W < 10 or H < 5:
             return
+        full_w, full_h = W, H
+        ratio = ASPECTS.get(self.cfg.get("aspect", "FILL"))
+        if ratio:
+            if W / (H * CELL_RATIO) > ratio:
+                W = max(20, round(H * CELL_RATIO * ratio))
+            else:
+                H = max(8, round(W / (CELL_RATIO * ratio)))
+        pad_left = (full_w - W) // 2
+        self.pad_top = (full_h - H) // 2
         v = self.view
         phos, dim = self.pal
         bright = self.style_for("")
@@ -281,7 +307,8 @@ class Engine(App):
                 opt_i += 1
             elif isinstance(item, Input):
                 cur = ("█" if self.blink_on else " ")
-                rows = self._wrap(item.prompt + item.buf + cur, W)
+                shown_buf = "*" * len(item.buf) if item.mask else item.buf
+                rows = self._wrap(item.prompt + shown_buf + cur, W)
                 for r in rows:
                     fixed.append((Text(r, style=bright), None))
             elif isinstance(item, Log):
@@ -312,13 +339,16 @@ class Engine(App):
             self.scroll = 0
         shown = rows[self.scroll: self.scroll + body_h]
 
-        top = len(head) + len(toast)
+        top = self.pad_top + len(head) + len(toast)
         self.row_map = {top + y: o for y, (_, o) in enumerate(shown) if o is not None}
         rows_out = head + toast + [r for r, _ in shown] + [Text("")] * (body_h - len(shown)) + foot
-        sig = (W, H, tuple((t.plain, str(t.style)) for t in rows_out))
+        sig = (full_w, full_h, pad_left, tuple((t.plain, str(t.style)) for t in rows_out))
         if sig == self._ul_sig:
             return  # nothing changed: skip the terminal write
         self._ul_sig = sig
+        if pad_left or self.pad_top:
+            margin = " " * pad_left
+            rows_out = [Text("")] * self.pad_top + [Text(margin) + r for r in rows_out]
         out = Text()
         for t in rows_out:
             if CONSOLE:
