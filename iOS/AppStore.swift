@@ -41,7 +41,7 @@ struct AppSettings: Codable, Equatable {
     var sounds = true
     var haptics = true
     // PERSONAL tab
-    var vikunjaURL = "https://redrabbit.tail12eca2.ts.net:3456"
+    var vikunjaURL = ""
     var vikunjaProject = 0          // 0 = all projects
     var places: [Place] = []
     var questPins: [String: QuestPin] = [:]

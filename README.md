@@ -31,7 +31,7 @@ Your open Vikunja tasks as quests, straight from your Vikunja server (not throug
    and [MARK PLACE], for example `STUDIO`, then give tasks the label `STUDIO` in Vikunja.
 
 **Setup:** in Vikunja, *Settings > API Tokens*, make a token with access to tasks and projects. In the
-app, **[SETUP] > VIKUNJA QUESTS**: the address (`https://redrabbit.tail12eca2.ts.net:3456`), the token
+app, **[SETUP] > VIKUNJA QUESTS**: the address (for example `https://vikunja.your-tailnet.ts.net`), the token
 (stored in the iPhone keychain), and optionally one project ID. Tailscale must be on to reach it.
 
 ## Building without a Mac
