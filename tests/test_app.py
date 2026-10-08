@@ -347,3 +347,50 @@ def test_field_unit(home):
         await pilot.press("escape")
         assert app.view.id == "login"
     run_login(t)
+
+
+# ------------------------------------------------------------------ phone link API
+def test_phone_link_api(home):
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    def call(port, path, token=None, body=None):
+        req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=_json.dumps(body).encode() if body else None,
+                                     method="POST" if body else "GET",
+                                     headers={"Content-Type": "application/json",
+                                              **({"Authorization": f"Bearer {token}"} if token else {})})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, _json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, _json.loads(e.read())
+
+    async def t(app, pilot):
+        app.cfg["link_port"] = 0                       # any free port
+        assert app.start_link(quiet=True)
+        port, token = app.link.port, app.cfg["link_token"]
+        assert len(token) >= 30
+        code, _ = await asyncio.to_thread(call, port, "/api/status")
+        assert code == 401, "no token must be refused"
+        code, _ = await asyncio.to_thread(call, port, "/api/status", "wrong-token")
+        assert code == 401
+        code, st = await asyncio.to_thread(call, port, "/api/status", token)
+        assert code == 200 and st["device"] == "UPLINK-9" and st["version"].startswith("BETA")
+        assert {"battery", "temp", "load", "disk_free", "uptime"} <= set(st["vitals"])
+        assert [n["name"] for n in st["nodes"]][:1] == ["PVE-1"] and st["condition"] in ("NOMINAL", "LOW POWER", "OVERHEATING")
+        code, tp = await asyncio.to_thread(call, port, "/api/tapes", token)
+        assert code == 200 and tp["tapes"][0]["name"] == "BUILD LOG 01"
+        code, ms = await asyncio.to_thread(call, port, "/api/messages", token)
+        tid = ms["threads"][0]["id"]
+        code, res = await asyncio.to_thread(call, port, f"/api/messages/{tid}", token, {"text": "from the phone"})
+        assert code == 200 and res["ok"]
+        assert app.threads[0]["msgs"][-1]["t"] == "from the phone" and app.threads[0]["msgs"][-1]["via"] == "PHONE"
+        code, _ = await asyncio.to_thread(call, port, "/api/messages/nope", token, {"text": "x"})
+        assert code == 404
+        await pick(app, pilot, "SETTINGS")
+        await pick(app, pilot, "PHONE LINK")
+        await pick(app, pilot, "SHOW PAIRING CODE")
+        assert app.view.id == "linkqr" and any("█" in getattr(i, "text", "") for i in app.view.items)
+        app.link.stop()
+    run(t)

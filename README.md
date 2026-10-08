@@ -53,6 +53,27 @@ because anyone who can SSH in can change the config.
 Forgot the admin password? Over SSH, clear `"admin_pw"` in `~/.config/uplink/config.json`;
 the next admin login asks for a new one.
 
+## Phone link
+
+The Uplink-9 iPhone and Apple Watch apps (separate repo, `uplink-9-mobile`) can read this
+device's status and send messages through it.
+
+1. **SETTINGS > PHONE LINK > LINK ON** (admin).
+2. **SHOW PAIRING CODE**, then point the iPhone camera at it and open the link.
+
+The phone reaches the device on port 8909, over Tailscale when both are on your tailnet, so it
+works away from home too. Only someone with the pairing code can connect; **NEW PAIRING CODE**
+locks out every phone paired before.
+
+API, all with `Authorization: Bearer <token>`:
+
+| Request | Returns |
+|---|---|
+| `GET /api/status` | vitals, condition, drives, nodes, VPN, unread count |
+| `GET /api/messages` | threads with their last 30 messages |
+| `POST /api/messages/<thread id>` with `{"text": "..."}` | sends a message |
+| `GET /api/tapes` | holotapes |
+
 ## Updates
 
 **SETTINGS > UPDATE FIRMWARE** checks GitHub, shows what changed, installs, and restarts.

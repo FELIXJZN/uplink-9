@@ -1,5 +1,14 @@
 # Changelog
 
+## Beta 0.11
+
+- Phone link for the new Uplink-9 iPhone and Apple Watch apps (SETTINGS > PHONE LINK, admin only)
+  - A small HTTP API on port 8909: device vitals, drives, nodes, VPN, messages, holotapes,
+    and sending messages from the phone
+  - Every request needs the pairing token; pair by scanning the QR code with the iPhone camera
+  - NEW PAIRING CODE revokes every paired phone
+  - Messages sent from the phone are marked as such and go out through the thread's webhook
+
 ## Beta 0.10
 
 - Uplink-9 is now numbered as a beta. This is the same code as 2.2.0 below; the earlier

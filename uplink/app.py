@@ -13,7 +13,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import __version__, version_label, audio, auth, sound, storage, system, updater, webhooks
+from . import __version__, version_label, audio, auth, link, sound, storage, system, updater, webhooks
 from .engine import ASPECTS, Engine, Input, Line, Log, Opt, View
 from .tapes import BUILTIN_TAPES
 
@@ -34,14 +34,14 @@ def dots(label: str, status: str, width: int = 36) -> str:
     return (f"> {label} ").ljust(width, ".") + f" {status}"
 
 
-def qr_rows(text: str) -> list[str]:
+def qr_rows(text: str, error: str = "m") -> list[str]:
     """A QR code drawn with half-block characters: two module rows per text row.
     Light modules are lit (green), dark modules are the black screen, so phones read it normally."""
     try:
         import segno
     except ImportError:
         return []
-    q = segno.make(text, error="m")
+    q = segno.make(text, error=error, boost_error=False)
     m = [[bool(v) for v in row] for row in q.matrix]
     border = 2
     size = len(m) + border * 2
@@ -73,6 +73,7 @@ class Uplink(Engine):
         self.update_info = None
         self.mic_ok = None
         self._ul_stop = threading.Event()
+        self.link = link.LinkServer(self)
 
     # ================================================================ startup
     def on_mount(self) -> None:
@@ -83,6 +84,7 @@ class Uplink(Engine):
 
     def on_unmount(self) -> None:
         self._ul_stop.set()
+        self.link.stop()
 
     def collect_boot_facts(self):
         # run the slow checks side by side so a missing network can't stall the boot
@@ -178,6 +180,8 @@ class Uplink(Engine):
         threading.Thread(target=self.usb_loop, daemon=True).start()
         threading.Thread(target=self.node_loop, daemon=True).start()
         threading.Thread(target=self.ntfy_loop, daemon=True).start()
+        if self.cfg["link"] == "ON":
+            self.start_link(quiet=True)
         if self.cfg["update_check_boot"] == "ON" and updater.is_git():
             self.bg(lambda: updater.check(self.cfg["update_branch"]), self.boot_update_result)
 
@@ -1142,37 +1146,53 @@ class Uplink(Engine):
             text = st["buf"].strip()
             if not text:
                 return
-            h = self.hook_by_id(t.get("hook", ""))
-            m = {"me": True, "t": text, "at": int(time.time()), "status": "SENDING" if h else "LOCAL"}
-            t["msgs"].append(m)
-            self.save_threads()
-            self.sfx("ok")
             self.show(lambda: self.thread(t))
-            self.hook("message.sent", f"message to {t['name']}: {text}", {"thread": t["name"], "text": text},
-                      exclude=h["id"] if h else "")
-            if h:
-                def work():
-                    return webhooks.send(h, "message.sent", text, {"thread": t["name"]}, self.cfg["device_name"])
-
-                def done(result):
-                    ok = isinstance(result, tuple) and result[0]
-                    m["status"] = "SENT" if ok else "FAILED"
-                    if ok and h["format"] == "NTFY":
-                        try:
-                            t.setdefault("sent_ids", []).append(json.loads(result[2]).get("id", ""))
-                            t["sent_ids"] = t["sent_ids"][-50:]
-                        except ValueError:
-                            pass
-                    self.save_threads()
-                    self.cfg.save()
-                    if self.view and self.view.id == "thread":
-                        self.redraw()
-                self.bg(work, done)
+            self.send_message(t, text)
 
         self.show(lambda: View("compose", "TO: " + t["name"], [
             Log([self.msg_line(m, t["name"]) for m in t["msgs"][-6:]]), Line(""), Input("YOU> ", st["buf"]),
         ], footer=("[ENTER] SEND", "[ESC] CANCEL"), back=lambda: self.show(lambda: self.thread(t)),
             on_enter=send, on_char=char, on_backspace=backspace))
+
+    def send_message_from_link(self, thread_id: str, text: str) -> bool:
+        """Called by the phone link (on the UI thread). Returns False if the thread doesn't exist."""
+        t = next((x for x in self.threads if x["id"] == thread_id), None)
+        if not t:
+            return False
+        self.send_message(t, text, source="PHONE")
+        if self.view and self.view.id in ("thread", "inbox", "main", "field"):
+            self.redraw()
+        return True
+
+    def send_message(self, t: dict, text: str, source: str = "") -> None:
+        """Add a message to a thread and send it through the thread's webhook, if it has one."""
+        h = self.hook_by_id(t.get("hook", ""))
+        m = {"me": True, "t": text, "at": int(time.time()), "status": "SENDING" if h else "LOCAL"}
+        if source:
+            m["via"] = source
+        t["msgs"].append(m)
+        self.save_threads()
+        self.sfx("ok")
+        self.hook("message.sent", f"message to {t['name']}: {text}", {"thread": t["name"], "text": text, "via": source or "DEVICE"},
+                  exclude=h["id"] if h else "")
+        if h:
+            def work():
+                return webhooks.send(h, "message.sent", text, {"thread": t["name"]}, self.cfg["device_name"])
+
+            def done(result):
+                ok = isinstance(result, tuple) and result[0]
+                m["status"] = "SENT" if ok else "FAILED"
+                if ok and h["format"] == "NTFY":
+                    try:
+                        t.setdefault("sent_ids", []).append(json.loads(result[2]).get("id", ""))
+                        t["sent_ids"] = t["sent_ids"][-50:]
+                    except ValueError:
+                        pass
+                self.save_threads()
+                self.cfg.save()
+                if self.view and self.view.id == "thread":
+                    self.redraw()
+            self.bg(work, done)
 
     def ntfy_loop(self) -> None:
         """Pull replies for threads linked to an ntfy topic."""
@@ -1602,6 +1622,8 @@ class Uplink(Engine):
             self.admin_cycle("USB AUTO-MOUNT", "usb_automount", ["ON", "OFF"], self.settings),
             Opt("UPDATE FIRMWARE", self.admin_only(lambda: self.show(self.firmware)), self.lock_tag(fw_tag),
                 "warn" if self.update_info and self.role == "ADMIN" else self.lock_style()),
+            Opt("PHONE LINK", self.admin_only(lambda: self.show(self.link_screen)),
+                self.lock_tag(("ON :" + str(self.link.port)) if self.link.running else "OFF"), self.lock_style()),
             Opt("USERS & LOGIN", self.admin_only(lambda: self.show(self.users)), self.lock_tag(f"LOGIN {self.cfg['login_at_boot']}"),
                 self.lock_style()),
             Opt("DEVICE NAME", self.admin_only(lambda: self.prompt("SETTINGS // NAME", "SHOWN IN THE TITLE BAR AND IN WEBHOOKS",
@@ -1636,6 +1658,67 @@ class Uplink(Engine):
             Opt("DISCORD INVITE", lambda: self.prompt("LOGIN // DISCORD", "INVITE LINK SHOWN WITH THE QR CODE", self.set_invite,
                                                       lambda: self.show(u), self.cfg["discord_invite"]), "EDIT"),
         ], back=lambda: self.show(self.settings))
+
+    # ---------------------------------------------------------------- phone link
+    def link_host(self) -> str:
+        """The address the phone should use: the Tailscale IP when there is one, so it works anywhere."""
+        ts_ip = system.tailscale_status()[1]
+        if ts_ip:
+            return ts_ip
+        for k, v in system.sysinfo():
+            if k == "IP":
+                return v
+        return "uplink9.local"
+
+    def start_link(self, quiet: bool = False) -> bool:
+        if not self.cfg["link_token"]:
+            self.cfg["link_token"] = link.new_token()
+            self.cfg.save()
+        ok = self.link.start(int(self.cfg["link_port"]))
+        if not quiet:
+            self.toast(f"PHONE LINK ON, PORT {self.link.port}" if ok else "LINK FAILED: " + self.link.error)
+        return ok
+
+    def link_screen(self) -> View:
+        s = self.link_screen
+
+        def toggle():
+            if self.link.running:
+                self.link.stop()
+                self.cfg["link"] = "OFF"
+                self.toast("PHONE LINK OFF")
+            else:
+                self.cfg["link"] = "ON" if self.start_link() else "OFF"
+            self.cfg.save()
+            self.sfx("clack")
+            self.show(s, keep_sel=True)
+
+        def new_token():
+            self.cfg["link_token"] = link.new_token()
+            self.cfg.save()
+            self.toast("NEW CODE MADE. PAIRED PHONES MUST PAIR AGAIN.")
+            self.show(s, keep_sel=True)
+
+        items = [Line("LETS THE UPLINK-9 IPHONE AND WATCH APPS", "dim"),
+                 Line("READ STATUS AND SEND MESSAGES.", "dim"), Line(""),
+                 Opt("LINK", toggle, "ON" if self.link.running else "OFF")]
+        if self.link.error and not self.link.running:
+            items.append(Line("ERROR: " + self.link.error, "bad"))
+        if self.link.running:
+            items += [Line(f"ADDRESS {self.link_host()}:{self.link.port}", "dim"),
+                      Opt("SHOW PAIRING CODE", lambda: self.show(self.link_qr), "SCAN WITH IPHONE")]
+        items += [Opt("NEW PAIRING CODE", lambda: self.confirm(
+            "CONFIRM", "MAKE A NEW PAIRING CODE?", "PHONES PAIRED WITH THE OLD CODE STOP WORKING.",
+            "YES, NEW CODE", new_token, lambda: self.show(s)), "REVOKES PHONES", "warn"),
+            Line(""), Line("ONLY THE PAIRING CODE GIVES ACCESS. KEEP IT PRIVATE.", "dim")]
+        return View("link", "SETTINGS // PHONE LINK", items, back=lambda: self.show(self.settings))
+
+    def link_qr(self) -> View:
+        url = link.pair_url(self.link_host(), self.link.port, self.cfg["link_token"], self.cfg["device_name"])
+        rows = qr_rows(url, error="l")      # low error correction keeps the code small enough for the screen
+        items = [Line(r) for r in rows] if rows else [Line("QR CODES NEED THE 'SEGNO' PACKAGE.", "warn")]
+        items.append(Line("OPEN THE IPHONE CAMERA AND POINT IT HERE.", "dim"))
+        return View("linkqr", "PAIR IPHONE", items, back=lambda: self.show(self.link_screen), on_enter=lambda: None)
 
     def set_soon_name(self, v: str) -> None:
         if v:
