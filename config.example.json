@@ -1,0 +1,23 @@
+{
+  "callsign": "UPLINK-9",
+  "plain_mode": false,
+  "effects": {
+    "boot_sequence": true,
+    "typing": true,
+    "typing_delay_ms": 8,
+    "flicker": true
+  },
+  "update": {
+    "remote": "origin",
+    "channel": "tags",
+    "branch": "main",
+    "check_on_boot": true
+  },
+  "usb": {
+    "mount_roots": ["/media", "/run/media", "/mnt"]
+  },
+  "webhooks": [],
+  "messages": {
+    "relay_webhook": ""
+  }
+}
