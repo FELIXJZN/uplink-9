@@ -12,7 +12,7 @@ on a touchscreen, by keyboard, or both.
 - **VPN:** switch between Tailscale, Twingate or off (one at a time)
 - **Holotape:** record from the microphone, play back, export to USB and import from USB
 - **Settings:** display color, screen and touch, accessibility, webhooks, firmware updates from GitHub
-- **Phone link:** the Uplink-9 iPhone and Apple Watch apps read it and send messages through it
+- **Phone link:** the Uplink-9 iPhone and Apple Watch apps (in [`mobile/`](mobile/README.md)) read it and send messages through it
 
 ## Install on the device
 
