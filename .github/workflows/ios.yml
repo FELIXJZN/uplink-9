@@ -21,7 +21,7 @@ jobs:
     name: Build Uplink9.ipa
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -67,14 +67,14 @@ jobs:
           grep -E 'warning:' build.log | grep -v 'appintentsmetadataprocessor' | sed -E 's/.*warning: //' | sort -u | head -8 | while read -r w; do echo "::warning title=Compiler::$w"; done
 
       - name: Keep the .ipa
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: Uplink9-ipa
           path: mobile/Uplink9.ipa
 
       - name: Keep the build log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: build-log
           path: mobile/build.log
@@ -91,7 +91,7 @@ jobs:
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
       ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Check the settings
         run: |

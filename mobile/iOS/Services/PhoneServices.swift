@@ -56,6 +56,28 @@ struct NodeConfig: Codable, Equatable, Identifiable {
     ]
 }
 
+/// Finishes a probe exactly once, whichever comes first: connected, failed or timed out.
+private final class ProbeResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+    private let connection: NWConnection
+    private let cont: CheckedContinuation<Double?, Never>
+
+    init(_ connection: NWConnection, _ cont: CheckedContinuation<Double?, Never>) {
+        self.connection = connection
+        self.cont = cont
+    }
+
+    func finish(_ value: Double?) {
+        lock.lock()
+        defer { lock.unlock() }
+        if done { return }
+        done = true
+        connection.cancel()
+        cont.resume(returning: value)
+    }
+}
+
 enum NodeProbe {
     /// Milliseconds to connect, or nil when the host doesn't answer within the timeout.
     static func check(host: String, port: Int, timeout: Double = 2.5) async -> Double? {
@@ -63,25 +85,16 @@ enum NodeProbe {
         return await withCheckedContinuation { (cont: CheckedContinuation<Double?, Never>) in
             let connection = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: .tcp)
             let start = Date()
-            let lock = NSLock()
-            var finished = false
-            func finish(_ value: Double?) {
-                lock.lock()
-                defer { lock.unlock() }
-                if finished { return }
-                finished = true
-                connection.cancel()
-                cont.resume(returning: value)
-            }
+            let result = ProbeResult(connection, cont)
             connection.stateUpdateHandler = { state in
                 switch state {
-                case .ready: finish(Date().timeIntervalSince(start) * 1000)
-                case .failed, .waiting: finish(nil)
+                case .ready: result.finish(Date().timeIntervalSince(start) * 1000)
+                case .failed, .waiting: result.finish(nil)
                 default: break
                 }
             }
             connection.start(queue: .global(qos: .utility))
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { finish(nil) }
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { result.finish(nil) }
         }
     }
 }
