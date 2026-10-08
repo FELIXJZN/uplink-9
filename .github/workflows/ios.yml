@@ -67,14 +67,14 @@ jobs:
           grep -E 'warning:' build.log | grep -v 'appintentsmetadataprocessor' | sed -E 's/.*warning: //' | sort -u | head -8 | while read -r w; do echo "::warning title=Compiler::$w"; done
 
       - name: Keep the .ipa
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: Uplink9-ipa
           path: mobile/Uplink9.ipa
 
       - name: Keep the build log
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: build-log
           path: mobile/build.log
