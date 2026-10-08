@@ -1,7 +1,6 @@
 """System screen: updates, plain mode, device info, power."""
 from __future__ import annotations
 
-import os
 import shutil
 import socket
 import subprocess
@@ -9,6 +8,7 @@ from pathlib import Path
 
 from . import __version__
 from . import config as config_mod
+from .config import sync
 from . import updater
 
 
@@ -78,7 +78,7 @@ def info_lines() -> list[str]:
 def _power(scr, verb: str) -> None:
     if not scr.confirm(verb.upper(), f"{verb.capitalize()} the device now?"):
         return
-    os.sync()
+    sync()
     try:
         res = subprocess.run(["systemctl", verb], capture_output=True, text=True, timeout=15)
         err = res.stderr.strip() if res.returncode else ""

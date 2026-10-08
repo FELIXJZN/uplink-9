@@ -1,4 +1,7 @@
-"""Screen drawing, phosphor effects and input widgets.
+"""Text-console backend (curses): drawing, phosphor effects and input widgets.
+
+Used over SSH or when no graphical display is available. gui.py is the
+touchscreen-capable backend with the same methods.
 
 Everything is keyboard-only and works without arrow keys, so it is usable on a
 BlackBerry-style keyboard:  j/k or w/s move, ENTER or space selects, q goes back,
@@ -8,8 +11,9 @@ from __future__ import annotations
 
 import curses
 import random
-import textwrap
 import time
+
+from .text import wrap_lines
 
 ESC = 27
 BACK_KEYS = {ord("q"), ord("Q"), ESC, curses.KEY_BACKSPACE, 127, 8, curses.KEY_LEFT}
@@ -19,23 +23,12 @@ SELECT_KEYS = {curses.KEY_ENTER, 10, 13, ord(" "), curses.KEY_RIGHT}
 PAGE_UP_KEYS = {curses.KEY_PPAGE, ord("b")}
 
 
-def wrap_lines(lines, width: int) -> list[str]:
-    """Wrap each line to width, keeping blank lines as paragraph breaks."""
-    out: list[str] = []
-    width = max(1, width)
-    for line in lines:
-        if not line.strip():
-            out.append("")
-        else:
-            out.extend(textwrap.wrap(line, width) or [""])
-    return out
-
-
 class Screen:
     def __init__(self, stdscr, cfg: dict):
         self.s = stdscr
         self.cfg = cfg
         self.plain = bool(cfg.get("plain_mode") or cfg.get("_cli_plain"))
+        self.touch = False
         self.skip_effects = False
         self.s.keypad(True)
         self._cursor(0)
@@ -84,7 +77,13 @@ class Screen:
         except curses.error:
             pass
 
-    def frame(self, title: str, hint: str = "") -> None:
+    def describe(self) -> str:
+        return "TEXT CONSOLE"
+
+    def refresh(self) -> None:
+        self.s.refresh()
+
+    def frame(self, title: str, hint: str = "", back: bool = True) -> None:
         """Clear and draw the title bar and the key-hint line."""
         self.s.erase()
         h, w = self.size()
@@ -233,6 +232,22 @@ class Screen:
         self.frame(title)
         self.put(2, 1, text, self.bright)
         self.s.refresh()
+
+    def status(self, title: str, lines: list[str], button: str = "") -> None:
+        """Live status screen (e.g. recording). Pair with poll_stop()."""
+        self.frame(title, f"any key: {button.lower()}" if button else "")
+        for i, line in enumerate(lines):
+            self.put(2 + i, 1, line, self.bright if i == 0 else self.normal)
+        self.s.refresh()
+
+    def poll_stop(self, seconds: float) -> bool:
+        """Wait up to `seconds`; True if the user pressed a key."""
+        self.s.timeout(max(1, int(seconds * 1000)))
+        try:
+            key = self.s.getch()
+        finally:
+            self.s.timeout(-1)
+        return key not in (-1, curses.KEY_RESIZE)
 
     def prompt(self, title: str, label: str, initial: str = "", max_len: int = 2000):
         """Single text field (wraps over several lines). Returns the text, or None on ESC."""

@@ -1,8 +1,8 @@
-"""Boot sequence and main menu."""
+"""Boot sequence and main menu (works on either screen backend)."""
 from __future__ import annotations
 
 from . import __version__, holotapes, messages, system, updater, usb, webhooks
-from .ui import Screen
+from .text import leader
 
 SECTIONS = [
     ("HOLOTAPES", holotapes.run),
@@ -26,13 +26,13 @@ def short_status(status: updater.Status) -> str:
     return "UP TO DATE"
 
 
-def boot(scr: Screen, cfg: dict, ctx: dict) -> None:
-    animate = scr.effect("boot_sequence")
-    scr.frame("BOOT")
-    if animate:
+def boot(scr, cfg: dict, ctx: dict) -> None:
+    scr.frame("BOOT", back=False)
+    if scr.effect("boot_sequence"):
         scr.flicker(3)
-        scr.frame("BOOT")
-    row = 2
+        scr.frame("BOOT", back=False)
+    rows, cols = scr.size()
+    row = 2 if not scr.touch else 3
 
     def line(text, attr=None, wait=0.08):
         nonlocal row
@@ -44,28 +44,28 @@ def boot(scr: Screen, cfg: dict, ctx: dict) -> None:
     line("4RDEN SYSTEMS // FIELD UNIT")
     row += 1
     mem = system.mem_total_mb()
-    line(f"{'MEMORY CHECK ':.<22} {str(mem) + ' MB' if mem else 'OK'}")
+    line(leader("MEMORY", cols) + (f"{mem} MB" if mem else "OK"))
+    line(leader("DISPLAY", cols) + scr.describe())
     drives = usb.mounted_drives(cfg.get("usb", {}).get("mount_roots", []))
-    line(f"{'USB BUS ':.<22} {len(drives)} DRIVE(S)")
-    line(f"{'NETWORK ':.<22} {system.local_ip() or 'OFFLINE'}")
-    line(f"{'UPDATE CHANNEL ':.<22} {cfg.get('update', {}).get('channel', 'tags').upper()}")
+    line(leader("USB BUS", cols) + f"{len(drives)} DRIVE(S)")
+    line(leader("NETWORK", cols) + (system.local_ip() or "OFFLINE"))
 
     if cfg.get("update", {}).get("check_on_boot", True) and system.local_ip():
-        scr.put(row, 1, f"{'CHECKING UPDATES ':.<22} ...")
-        scr.s.refresh()
+        scr.put(row, 1, leader("UPDATES", cols) + "...")
+        scr.refresh()
         status = updater.check(cfg, fetch_timeout=8)
         ctx["update"] = status
-        scr.put(row, 1, " " * 40)
-        line(f"{'CHECKING UPDATES ':.<22} {short_status(status)}")
+        line(leader("UPDATES", cols) + short_status(status).ljust(12))
 
-    if cfg.get("_error"):
-        line(f"WARNING: {cfg['_error']}", scr.bright)
+    for key in ("_error", "_notice"):
+        if cfg.get(key):
+            line(f"! {cfg[key]}", scr.bright)
     row += 1
-    line("READY.", scr.bright, wait=0.4)
+    line("READY.", scr.bright, wait=0.5)
     scr.skip_effects = False
 
 
-def main_menu(scr: Screen, cfg: dict, ctx: dict) -> None:
+def main_menu(scr, cfg: dict, ctx: dict) -> None:
     sel = 0
     while True:
         names = [name for name, _ in SECTIONS]
@@ -81,12 +81,11 @@ def main_menu(scr: Screen, cfg: dict, ctx: dict) -> None:
         SECTIONS[choice][1](scr, cfg, ctx)
 
 
-def run(stdscr, cfg: dict, no_boot: bool = False) -> None:
-    scr = Screen(stdscr, cfg)
+def start(scr, cfg: dict, no_boot: bool = False) -> None:
     ctx: dict = {"update": None}
-    if not no_boot:
-        boot(scr, cfg, ctx)
     try:
+        if not no_boot:
+            boot(scr, cfg, ctx)
         main_menu(scr, cfg, ctx)
     except system.ExitToShell:
         return

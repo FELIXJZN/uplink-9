@@ -6,7 +6,6 @@ Already-mounted drives under /media, /run/media or /mnt are picked up too.
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -14,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import config as config_mod
+from .config import sync
 from . import holotapes
 
 MAX_VIEW_BYTES = 256 * 1024
@@ -109,7 +109,7 @@ def mount(path: str) -> tuple[bool, str]:
 
 
 def eject(drive: Drive) -> tuple[bool, str]:
-    os.sync()
+    sync()
     if shutil.which("udisksctl"):
         return _run(["udisksctl", "unmount", "-b", drive.device])
     return _run(["umount", drive.mountpoint])
@@ -187,7 +187,7 @@ def _copy_to_drive(scr, folder: Path) -> None:
         return
     try:
         shutil.copy2(files[pick], folder / files[pick].name)
-        os.sync()
+        sync()
         scr.pager("COPY HERE", [f"Wrote {files[pick].name} to the drive."])
     except OSError as exc:
         scr.pager("COPY HERE", [f"Write failed: {exc}"])
@@ -229,7 +229,7 @@ def _drive_menu(scr, drive: Drive) -> None:
         elif choice == 1:
             try:
                 n = holotapes.export_tapes(holotapes.tape_dir(), root)
-                os.sync()
+                sync()
                 scr.pager("EXPORT", [f"{n} holotape(s) written to {holotapes.EXPORT_DIR}"])
             except OSError as exc:
                 scr.pager("EXPORT", [f"Export failed: {exc}"])

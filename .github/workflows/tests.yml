@@ -16,7 +16,10 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Unit tests
+        env:
+          SDL_VIDEODRIVER: dummy
         run: |
+          pip install pygame
           git config --global user.name ci
           git config --global user.email ci@example.com
           python -m unittest discover tests -v

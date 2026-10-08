@@ -1,11 +1,22 @@
 {
   "callsign": "UPLINK-9",
+  "interface": "auto",
+  "touch": "auto",
+  "gui": {
+    "fullscreen": "auto",
+    "window": [
+      800,
+      480
+    ],
+    "font_size": 0
+  },
   "plain_mode": false,
   "effects": {
     "boot_sequence": true,
     "typing": true,
     "typing_delay_ms": 8,
-    "flicker": true
+    "flicker": true,
+    "scanlines": true
   },
   "update": {
     "remote": "origin",
@@ -14,7 +25,11 @@
     "check_on_boot": true
   },
   "usb": {
-    "mount_roots": ["/media", "/run/media", "/mnt"]
+    "mount_roots": [
+      "/media",
+      "/run/media",
+      "/mnt"
+    ]
   },
   "webhooks": [],
   "messages": {

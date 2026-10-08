@@ -2,7 +2,7 @@
 # UPLINK-9 installer. Run from inside the cloned repo:
 #
 #   ./scripts/install.sh              launcher + default config
-#   ./scripts/install.sh --deps       also apt-install git, alsa-utils, udisks2 (needs sudo)
+#   ./scripts/install.sh --deps       apt-install pygame, fonts, git, alsa-utils, udisks2 (needs sudo)
 #   ./scripts/install.sh --autostart  start UPLINK on tty1 whenever you log in there
 #   ./scripts/install.sh --autologin  log in on tty1 automatically at boot (needs sudo)
 #
@@ -30,14 +30,18 @@ done
 say() { printf '[uplink] %s\n' "$1"; }
 
 if [ "$DEPS" = 1 ]; then
-  say "installing packages (git python3 alsa-utils udisks2)"
+  say "installing packages"
   sudo apt-get update
-  sudo apt-get install -y git python3 alsa-utils udisks2
+  sudo apt-get install -y git python3 python3-pygame fonts-dejavu-core alsa-utils udisks2
+  # screen (video), touchscreen + keys (input) and audio access without root
+  sudo usermod -aG video,input,audio "$(id -un)"
+  say "added you to the video/input/audio groups (takes effect after reboot)"
 fi
 
 command -v python3 >/dev/null || { say "python3 is required"; exit 1; }
 python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))' || { say "python 3.9+ required"; exit 1; }
 command -v git >/dev/null || say "warning: git missing - updates won't work (use --deps)"
+python3 -c 'import pygame' 2>/dev/null || say "warning: pygame missing - no touch/graphics, text mode only (use --deps)"
 
 mkdir -p "$BIN"
 cat > "$BIN/uplink" <<EOF

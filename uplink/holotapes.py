@@ -104,9 +104,9 @@ def audio_available() -> bool:
 # ---- screen ---------------------------------------------------------------
 
 def _label(tape: dict) -> str:
-    stamp = tape.get("created", "")[:16].replace("T", " ")
+    stamp = tape.get("created", "")[5:16].replace("T", " ")
     kind = " [AUDIO]" if tape.get("audio") else ""
-    return f"{stamp}  {tape.get('title', '?').upper()}{kind}"
+    return f"{tape.get('title', '?').upper()}{kind}  {stamp}"
 
 
 def _record_audio(scr, directory: Path, title: str) -> None:
@@ -119,20 +119,15 @@ def _record_audio(scr, directory: Path, title: str) -> None:
         scr.pager("RECORD", [f"Could not start recorder: {exc}"])
         return
     start = time.monotonic()
-    scr.s.nodelay(True)
     try:
         while proc.poll() is None:
             secs = int(time.monotonic() - start)
-            scr.frame("RECORDING", "any key: stop")
             blink = "●" if secs % 2 == 0 or scr.plain else " "
-            scr.put(2, 1, f"{blink} REC  {secs // 60:02d}:{secs % 60:02d}", scr.bright)
-            scr.put(4, 1, title.upper())
-            scr.s.refresh()
-            if scr.s.getch() != -1:
+            scr.status("RECORDING", [f"{blink} REC  {secs // 60:02d}:{secs % 60:02d}", "",
+                                     title.upper()], button="STOP")
+            if scr.poll_stop(0.25):
                 break
-            time.sleep(0.2)
     finally:
-        scr.s.nodelay(False)
         if proc.poll() is None:
             proc.terminate()
             proc.wait(timeout=5)
@@ -150,18 +145,11 @@ def _play_audio(scr, directory: Path, tape: dict) -> None:
     except OSError as exc:
         scr.pager("PLAY", [f"Could not start player: {exc}"])
         return
-    scr.frame("PLAYING", "any key: stop")
-    scr.put(2, 1, f"▶ {tape.get('title', '').upper()}", scr.bright)
-    scr.s.refresh()
-    scr.s.nodelay(True)
-    try:
-        while proc.poll() is None:
-            if scr.s.getch() != -1:
-                proc.terminate()
-                break
-            time.sleep(0.1)
-    finally:
-        scr.s.nodelay(False)
+    scr.status("PLAYING", [f"▶ {tape.get('title', '').upper()}"], button="STOP")
+    while proc.poll() is None:
+        if scr.poll_stop(0.1):
+            proc.terminate()
+            break
 
 
 def _tape_menu(scr, directory: Path, tape: dict) -> None:

@@ -12,6 +12,16 @@ from pathlib import Path
 
 DEFAULTS: dict = {
     "callsign": "UPLINK-9",
+    # "auto": graphical screen on the device's own display, text mode over SSH.
+    # "gui": always graphical.  "tty": always text mode.
+    "interface": "auto",
+    # "auto": use touch controls when a touchscreen is detected. true / false to force.
+    "touch": "auto",
+    "gui": {
+        "fullscreen": "auto",   # auto = fullscreen on the device, a window on a desktop
+        "window": [800, 480],
+        "font_size": 0,         # 0 = pick from screen size
+    },
     # Accessibility / plain mode: no colours, no typing, no flicker, no boot animation.
     "plain_mode": False,
     "effects": {
@@ -19,6 +29,7 @@ DEFAULTS: dict = {
         "typing": True,
         "typing_delay_ms": 8,
         "flicker": True,
+        "scanlines": True,
     },
     "update": {
         "remote": "origin",
@@ -57,6 +68,12 @@ def data_dir() -> Path:
         path = Path(base) / "uplink"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def sync() -> None:
+    """Flush writes to disk (USB sticks!). No-op where unsupported (Windows)."""
+    if hasattr(os, "sync"):
+        os.sync()
 
 
 def config_path() -> Path:

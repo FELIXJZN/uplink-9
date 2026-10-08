@@ -1,14 +1,16 @@
 # UPLINK-9
 
-A retro green-phosphor terminal OS for a handheld Linux device with a
-BlackBerry-style keyboard. It boots straight into a glowing green terminal,
-records holotapes, reads and writes USB drives, fires webhooks and updates
-itself from this GitHub repo.
+A retro green-phosphor terminal OS for handheld Linux devices. It boots
+straight into a glowing green terminal, records holotapes, reads and writes
+USB drives, fires webhooks and updates itself from this GitHub repo.
+
+It runs by **touch alone** (no keyboard needed) and detects a touchscreen
+automatically. A physical keyboard works too, whenever one is attached.
 
 ```
  UPLINK-9 // BOOT
 
- UPLINK-9 TERMINAL  v0.1.0
+ UPLINK-9 TERMINAL  v0.2.0
  4RDEN SYSTEMS // FIELD UNIT
 
  MEMORY CHECK ......... 3790 MB
@@ -30,12 +32,30 @@ itself from this GitHub repo.
 | **Webhooks** | Add Discord, ntfy or generic JSON webhooks and send pings or messages. |
 | **System** | Check/install updates from GitHub, plain mode toggle, device info (battery, network, disk), exit to shell, reboot, shut down. |
 
+## Touch and screens
+
+UPLINK-9 draws straight to the device's display (no desktop needed) and picks
+its controls by itself:
+
+- **Touchscreen found** → touch mode: big tap targets, swipe to scroll, a
+  **BACK** button in the title bar, and an on-screen keyboard for typing.
+  If detection ever misses one, the first tap switches touch mode on.
+- **No touchscreen** → compact layout driven by the keyboard.
+- **Over SSH** (or no graphics available) → the same app in text mode.
+
+Detection reads the kernel's input device list and looks for devices that
+report absolute positions and are marked as sitting on a display, which
+excludes touchpads. Check what it finds with `uplink --detect`.
+
+Force a choice with `--gui` / `--tty` and `--touch` / `--no-touch`, or the
+`interface` and `touch` settings in the config.
+
 **Plain mode** (accessibility): no colour, no typing animation, no flicker,
 no boot sequence. Turn it on in SYSTEM, or start once with `uplink --plain`.
 
-## Keys
+## Keys (optional)
 
-Everything works without arrow keys:
+With a keyboard attached, everything works without arrow keys too:
 
 | Key | Action |
 |---|---|
@@ -48,7 +68,8 @@ Everything works without arrow keys:
 
 ## Install on the device
 
-Needs Linux with Python 3.9+ and git. No Python packages required.
+Needs Linux with Python 3.9+, git and pygame (`python3-pygame`) for the
+graphical/touch screen. Without pygame it still runs in text mode.
 
 ```sh
 git clone https://github.com/FELIXJZN/uplink-9.git
@@ -57,7 +78,7 @@ cd uplink-9
 sudo reboot
 ```
 
-- `--deps` installs `git`, `alsa-utils` (audio holotapes) and `udisks2` (USB mounting) with apt.
+- `--deps` installs `python3-pygame`, fonts, `git`, `alsa-utils` (audio holotapes) and `udisks2` (USB mounting) with apt, and adds you to the `video`, `input` and `audio` groups so the screen and touchscreen work without root.
 - `--autostart` launches UPLINK-9 whenever you log in on the first console (tty1).
 - `--autologin` logs in on tty1 at boot, so the device boots straight into the terminal.
 - Plain `./scripts/install.sh` just installs the `uplink` command and a config.
@@ -94,8 +115,11 @@ directly on the device.
 ```json
 {
   "callsign": "UPLINK-9",
+  "interface": "auto",
+  "touch": "auto",
+  "gui": { "fullscreen": "auto", "window": [800, 480], "font_size": 0 },
   "plain_mode": false,
-  "effects": { "boot_sequence": true, "typing": true, "typing_delay_ms": 8, "flicker": true },
+  "effects": { "boot_sequence": true, "typing": true, "typing_delay_ms": 8, "flicker": true, "scanlines": true },
   "update": { "remote": "origin", "channel": "tags", "branch": "main", "check_on_boot": true },
   "webhooks": [
     { "name": "discord", "url": "https://discord.com/api/webhooks/...", "format": "discord" }
@@ -111,24 +135,28 @@ the config file is in `.gitignore`; never commit it.
 ## Development
 
 ```sh
-python3 -m uplink            # run it
+python3 -m uplink            # run it (opens a window on a desktop)
 python3 -m uplink --no-boot  # skip the boot sequence
+python3 -m uplink --touch    # try the touch layout with your mouse
 python3 -m unittest discover tests
 ```
 
-On Windows, curses isn't built in: use WSL, or `pip install windows-curses`.
+On Windows: `pip install pygame`, then `python -m uplink` opens it in a
+window, mouse clicks act as taps. Text mode needs WSL or `windows-curses`.
 Code layout:
 
 ```
 uplink/
   __main__.py   entry point, restart handling
   app.py        boot sequence, main menu
-  ui.py         drawing, effects, menus, text input
+  gui.py        graphical + touch screen (pygame)
+  ui.py         text-mode screen (curses), same methods as gui.py
+  touch.py      touchscreen detection
   holotapes.py  messages.py  usb.py  webhooks.py  system.py
   updater.py    GitHub update channels
   config.py     config + data paths
 scripts/        install.sh, uninstall.sh
-tests/          unit tests (updater tests build a fake remote repo)
+tests/          unit tests (simulated taps, fake remote repo for updates)
 ```
 
 ## Roadmap
@@ -137,3 +165,9 @@ tests/          unit tests (updater tests build a fake remote repo)
 - Incoming webhooks / remote commands
 - Holotape playback with waveform display
 - Companion iPhone / Apple Watch apps
+
+## License
+
+GPL-3.0. See [LICENSE](LICENSE). You can use, change and share UPLINK-9, but
+anything you distribute that's built from it must stay open source under the
+same license.
