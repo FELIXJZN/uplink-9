@@ -4,10 +4,35 @@ The Uplink-9 terminal for iPhone and Apple Watch, forked from the handheld's int
 
 - **On its own:** this phone's vitals, node checks from the phone, local notes, the built-in
   holotapes, and two-way messages through an ntfy topic.
+- **PERSONAL:** your Vikunja tasks as quests on a map and a radar (see below).
 - **Linked to your Uplink-9 handheld:** its vitals, USB drives, node pings, VPN tunnel, message threads
   and holotapes, and you can send messages through it.
 - **Apple Watch:** three tabs (STATUS, NODES, MSGS). Turn the **Digital Crown** to switch tabs; tap to refresh.
   The Watch gets its data from the iPhone app.
+
+## PERSONAL tab: quests
+
+Your open Vikunja tasks as quests, straight from your Vikunja server (not through the handheld).
+
+- **MAP:** Apple's built-in map (no API key or account needed), dark and muted, with a quest marker
+  wherever tasks are. An amber marker has an overdue task. Tap a marker to open its quests.
+- **RADAR:** no map and no network at all: quests plotted by distance and direction from you,
+  turning with the phone. [RANGE] cycles 500 m, 2 km, 10 km and 50 km.
+- **QUESTS:** the list, nearest first, with the unplaced ones below.
+- **Quest card:** navigate there in Apple Maps, show it on the map, pin it to a place, open it in
+  Vikunja, or mark it done (written back to Vikunja).
+- **Nearby alert:** within 150 m of a quest the phone chirps and says so (while the app is open).
+
+**How a task gets on the map**, first match wins:
+
+1. You pinned it from the phone (kept on the phone; Vikunja isn't changed).
+2. Its description holds a location: `geo:50.8503,4.3517`, or a pasted Apple Maps or Google Maps link.
+3. One of its labels has the same name as a saved place. Mark places on the map with the crosshair
+   and [MARK PLACE], for example `STUDIO`, then give tasks the label `STUDIO` in Vikunja.
+
+**Setup:** in Vikunja, *Settings > API Tokens*, make a token with access to tasks and projects. In the
+app, **[SETUP] > VIKUNJA QUESTS**: the address (`https://redrabbit.tail12eca2.ts.net:3456`), the token
+(stored in the iPhone keychain), and optionally one project ID. Tailscale must be on to reach it.
 
 ## Building without a Mac
 

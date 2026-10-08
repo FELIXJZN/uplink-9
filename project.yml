@@ -14,7 +14,7 @@ settings:
     # or set the BUNDLE_ID variable in GitHub (see README).
     UPLINK_BUNDLE_ID: com.example.uplink9
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.11"
+    MARKETING_VERSION: "0.12"
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGN_STYLE: Automatic
     ENABLE_PREVIEWS: YES
@@ -45,6 +45,7 @@ targets:
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         NSLocalNetworkUsageDescription: Uplink-9 talks to your handheld and checks your nodes on the local network.
+        NSLocationWhenInUseUsageDescription: Uplink-9 shows how far you are from your quests on the map and radar.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(UPLINK_BUNDLE_ID)

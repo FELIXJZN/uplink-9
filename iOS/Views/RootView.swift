@@ -3,11 +3,13 @@ import SwiftUI
 /// The terminal frame: title bar, tab strip, swipeable tabs, status footer.
 struct RootView: View {
     @EnvironmentObject private var store: AppStore
+    @EnvironmentObject private var quests: QuestStore
     @Environment(\.scenePhase) private var phase
     @State private var tab = 0
     @State private var showSetup = false
 
-    static let tabs = ["VITALS", "CARGO", "LOGS", "SIGNAL"]
+    static let tabs = ["VITALS", "CARGO", "LOGS", "SIGNAL", "PERSONAL"]
+    static let personal = 4
 
     var body: some View {
         let theme = store.theme
@@ -15,13 +17,23 @@ struct RootView: View {
             header
             tabStrip
             TermRule()
-            TabView(selection: $tab) {
-                VitalsTab().tag(0)
-                CargoTab().tag(1)
-                LogsTab().tag(2)
-                SignalTab().tag(3)
+            Group {
+                switch tab {
+                case 0: VitalsTab()
+                case 1: CargoTab()
+                case 2: LogsTab()
+                case 3: SignalTab()
+                default: PersonalTab()
+                }
             }
-            .tabViewStyle(.page(indexDisplayMode: .never))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            // swipe sideways to change tab, except on PERSONAL where a swipe pans the map
+            .simultaneousGesture(DragGesture(minimumDistance: 40).onEnded { g in
+                guard tab != Self.personal, abs(g.translation.width) > 80,
+                      abs(g.translation.width) > abs(g.translation.height) * 1.5 else { return }
+                let next = tab + (g.translation.width < 0 ? 1 : -1)
+                if (0..<Self.tabs.count).contains(next) { withAnimation(.easeOut(duration: 0.15)) { tab = next } }
+            })
             TermRule()
             footer
         }
@@ -38,9 +50,12 @@ struct RootView: View {
         .onChange(of: phase) { _, newPhase in
             if newPhase == .active { store.start() } else { store.stop() }
         }
-        .onAppear { store.start() }
+        .onAppear {
+            quests.app = store
+            store.start()
+        }
         .sheet(isPresented: $showSetup) {
-            SetupView().environmentObject(store).environment(\.termTheme, theme)
+            SetupView().environmentObject(store).environmentObject(quests).environment(\.termTheme, theme)
         }
         .sheet(item: $store.pendingPair) { config in
             PairView(config: config).environmentObject(store).environment(\.termTheme, theme)
@@ -59,14 +74,14 @@ struct RootView: View {
     }
 
     private var tabStrip: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 6) {
             ForEach(Self.tabs.indices, id: \.self) { i in
                 Button {
                     withAnimation(.easeOut(duration: 0.15)) { tab = i }
                 } label: {
-                    TermText(i == tab ? "[\(Self.tabs[i])]" : " \(Self.tabs[i]) ", i == tab ? .normal : .dim, bold: i == tab)
+                    TermText(i == tab ? "[\(Self.tabs[i])]" : Self.tabs[i], i == tab ? .normal : .dim, bold: i == tab)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.7)
+                        .minimumScaleFactor(0.6)
                 }
                 .buttonStyle(.plain)
             }

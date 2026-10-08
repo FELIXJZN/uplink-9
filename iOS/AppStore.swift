@@ -17,6 +17,21 @@ struct LocalThread: Codable, Equatable, Identifiable {
     var unread = 0
 }
 
+/// A spot you saved on the map. Vikunja tasks with a label of the same name appear here.
+struct Place: Codable, Equatable, Identifiable {
+    var id = UUID()
+    var name: String
+    var lat: Double
+    var lon: Double
+}
+
+/// A task pinned from the phone (kept on the phone, Vikunja is not changed).
+struct QuestPin: Codable, Equatable {
+    var lat: Double
+    var lon: Double
+    var place: String?
+}
+
 struct AppSettings: Codable, Equatable {
     var link: LinkConfig?
     var nodes: [NodeConfig] = NodeConfig.defaults
@@ -25,6 +40,33 @@ struct AppSettings: Codable, Equatable {
     var plain = false
     var sounds = true
     var haptics = true
+    // PERSONAL tab
+    var vikunjaURL = "https://redrabbit.tail12eca2.ts.net:3456"
+    var vikunjaProject = 0          // 0 = all projects
+    var places: [Place] = []
+    var questPins: [String: QuestPin] = [:]
+    var nearbyAlerts = true
+
+    init() {}
+
+    /// Every field is optional when reading, so settings saved by an older version still load
+    /// (and the pairing survives the update).
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = AppSettings()
+        link = try c.decodeIfPresent(LinkConfig.self, forKey: .link)
+        nodes = try c.decodeIfPresent([NodeConfig].self, forKey: .nodes) ?? d.nodes
+        ntfyURL = try c.decodeIfPresent(String.self, forKey: .ntfyURL) ?? d.ntfyURL
+        color = (try? c.decodeIfPresent(Phosphor.self, forKey: .color)) ?? d.color
+        plain = try c.decodeIfPresent(Bool.self, forKey: .plain) ?? d.plain
+        sounds = try c.decodeIfPresent(Bool.self, forKey: .sounds) ?? d.sounds
+        haptics = try c.decodeIfPresent(Bool.self, forKey: .haptics) ?? d.haptics
+        vikunjaURL = try c.decodeIfPresent(String.self, forKey: .vikunjaURL) ?? d.vikunjaURL
+        vikunjaProject = try c.decodeIfPresent(Int.self, forKey: .vikunjaProject) ?? d.vikunjaProject
+        places = try c.decodeIfPresent([Place].self, forKey: .places) ?? d.places
+        questPins = try c.decodeIfPresent([String: QuestPin].self, forKey: .questPins) ?? d.questPins
+        nearbyAlerts = try c.decodeIfPresent(Bool.self, forKey: .nearbyAlerts) ?? d.nearbyAlerts
+    }
 }
 
 enum LinkState: Equatable {

@@ -3,6 +3,7 @@ import SwiftUI
 /// Settings: pairing, nodes, ntfy, look and sound.
 struct SetupView: View {
     @EnvironmentObject private var store: AppStore
+    @EnvironmentObject private var quests: QuestStore
     @Environment(\.termTheme) private var theme
     @Environment(\.dismiss) private var dismiss
 
@@ -14,6 +15,9 @@ struct SetupView: View {
     @State private var nodePort = "22"
     @State private var ntfy = ""
     @State private var confirmUnpair = false
+    @State private var vkURL = ""
+    @State private var vkToken = ""
+    @State private var vkProject = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -34,6 +38,10 @@ struct SetupView: View {
                     TermText("")
                     ntfySection
                     TermText("")
+                    vikunjaSection
+                    TermText("")
+                    placesSection
+                    TermText("")
                     lookSection
                     TermText("")
                     TermText("UPLINK-9 MOBILE \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")", .dim)
@@ -43,7 +51,11 @@ struct SetupView: View {
         }
         .padding(20)
         .background(Color.black.ignoresSafeArea())
-        .onAppear { ntfy = store.settings.ntfyURL }
+        .onAppear {
+            ntfy = store.settings.ntfyURL
+            vkURL = store.settings.vikunjaURL
+            vkProject = store.settings.vikunjaProject > 0 ? String(store.settings.vikunjaProject) : ""
+        }
         .confirmationDialog("Unpair from \(store.deviceName)?", isPresented: $confirmUnpair, titleVisibility: .visible) {
             Button("Unpair", role: .destructive) { store.unpair() }
         } message: {
@@ -120,6 +132,51 @@ struct SetupView: View {
             store.settings.ntfyURL = value
             store.syncNtfyThread()
             store.showToast(value.isEmpty ? "NTFY OFF" : "NTFY THREAD ADDED TO LOGS")
+        }
+    }
+
+    @ViewBuilder private var vikunjaSection: some View {
+        TermText("VIKUNJA QUESTS (PERSONAL TAB)", .dim)
+        TermText("TOKEN: VIKUNJA > SETTINGS > API TOKENS, WITH ACCESS TO TASKS AND PROJECTS.", .dim)
+        field("ADDRESS", text: $vkURL, keyboard: .URL)
+        field("TOKEN", text: $vkToken, keyboard: .asciiCapable, secure: true)
+        field("PROJECT", text: $vkProject, keyboard: .numberPad)
+        TermOption(label: "SAVE AND TEST", tag: quests.token.isEmpty ? "NO TOKEN" : "TOKEN SAVED") {
+            let url = vkURL.trimmingCharacters(in: .whitespaces)
+            guard url.hasPrefix("https://") || url.hasPrefix("http://") else {
+                store.showToast("USE THE FULL ADDRESS, LIKE HTTPS://REDRABBIT...:3456")
+                return
+            }
+            store.settings.vikunjaURL = url
+            store.settings.vikunjaProject = Int(vkProject) ?? 0
+            if !vkToken.isEmpty {
+                Keychain.set(vkToken.trimmingCharacters(in: .whitespaces), for: VikunjaClient.tokenKey)
+                vkToken = ""
+            }
+            Task {
+                await quests.refresh(force: true)
+                store.showToast(quests.status == "ONLINE" ? "VIKUNJA OK: \(quests.tasks.count) OPEN QUESTS" : quests.status)
+            }
+        }
+        TermOption(label: "NEARBY ALERTS", tag: store.settings.nearbyAlerts ? "ON" : "OFF") { store.settings.nearbyAlerts.toggle() }
+        TermText("PROJECT EMPTY = ALL PROJECTS. A TASK SHOWS ON THE MAP WHEN ITS DESCRIPTION HOLDS GEO:LAT,LON OR A MAPS LINK, OR ONE OF ITS LABELS IS A SAVED PLACE.", .dim)
+    }
+
+    @ViewBuilder private var placesSection: some View {
+        TermText("SAVED PLACES", .dim)
+        if store.settings.places.isEmpty {
+            TermText("NONE YET. MARK THEM ON THE PERSONAL MAP.", .dim)
+        }
+        ForEach(store.settings.places) { p in
+            HStack {
+                TermText(p.name + String(format: "  %.4f,%.4f", p.lat, p.lon))
+                Button {
+                    store.play("clack")
+                    store.settings.places.removeAll { $0.id == p.id }
+                } label: { TermText("[X]", .bad).fixedSize() }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Remove \(p.name)")
+            }
         }
     }
 
