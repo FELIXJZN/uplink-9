@@ -1,5 +1,23 @@
 # Changelog
 
+## Beta 0.12
+
+Merges the touch build (v0.2.0, made separately on GitHub) into the main line.
+
+- Graphics mode: on the device's own screen Uplink-9 draws straight to the display with pygame (no
+  desktop), with scanlines. Text mode is unchanged and still used over SSH, in terminals and on Windows.
+- Touch controls, found automatically (or switched on by the first touch): tap options, swipe to
+  scroll, buttons made from each screen's hints (BACK, PAUSE, EJECT, ▲ ▼ ...), on-screen keyboard
+- SETTINGS > SCREEN & TOUCH: mode at start, touch controls, text size, scanlines, full screen
+- Command line: `--gui`, `--tty`, `--touch`, `--no-touch`, `--plain`, `--no-boot`, `--detect`, `--version`
+- Firmware updates have two channels: RELEASES (only tagged versions, the new default) and BRANCH.
+  Updates never go backwards.
+- USB drives: IMPORT HOLOTAPES, from this device's exports or v0.2's
+- Keys: 1 to 9 pick an option, Q goes back, W / S move, Ctrl+U clears a text field
+- Settings, webhooks and holotapes from v0.2 carry over on first start
+- Fixed: a sent message only appeared once you left and reopened the thread
+- License: GPL-3.0
+
 ## Beta 0.11
 
 - Phone link for the new Uplink-9 iPhone and Apple Watch apps (SETTINGS > PHONE LINK, admin only)

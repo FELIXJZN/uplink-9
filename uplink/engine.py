@@ -2,6 +2,12 @@
 
 Every screen is a function that returns a View. The engine rebuilds the view with redraw()
 when state changes, and re-renders the cached view on timer ticks (clock, cursor blink).
+
+EngineCore holds all of that and knows nothing about the screen. A host puts it on a screen:
+  Engine (below)      text mode through Textual: terminals, SSH, Windows
+  gui.TouchHost       graphics through pygame: the device's own display, with touch
+A host provides set_interval, set_timer, call_from_thread, run_worker, exit, suspend,
+screen_size() and paint(rows, pad_left, pad_top), and feeds keys to press() and taps to tap_row().
 """
 from __future__ import annotations
 
@@ -11,11 +17,6 @@ import time
 import traceback
 from dataclasses import dataclass, field
 from typing import Callable, Optional
-
-from rich.text import Text
-from textual import events
-from textual.app import App, ComposeResult
-from textual.widgets import Static
 
 from . import sound
 from .storage import DATA_DIR, Config
@@ -35,6 +36,15 @@ PALETTES = {
 WARN = "#ffb642"
 BAD = "#ff5a4a"
 BG = "#000000"
+
+
+@dataclass
+class Row:
+    """One finished screen row: what a host draws."""
+    text: str
+    fg: str
+    bg: str = ""
+    bold: bool = False
 
 
 @dataclass
@@ -91,13 +101,7 @@ class View:
         return any(isinstance(i, Input) for i in self.items)
 
 
-class Engine(App):
-    CSS = f"""
-    Screen {{ background: {BG}; }}
-    #term {{ width: 100%; height: 100%; padding: 1 2; background: {BG}; }}
-    """
-    ENABLE_COMMAND_PALETTE = False
-
+class EngineCore:
     def __init__(self):
         super().__init__()
         self.cfg = Config()
@@ -114,11 +118,13 @@ class Engine(App):
         self._ul_sig = None
         self.role = "ADMIN"          # USER or ADMIN; set by the login screen
         self.pad_top = 0
+        self.force_plain = False     # uplink --plain: plain mode for this session only
+        self.cell_ratio = CELL_RATIO # height / width of one character cell on this screen
 
     # ------------------------------------------------------------ settings helpers
     @property
     def plain(self) -> bool:
-        return self.cfg["plain"] == "ON"
+        return self.force_plain or self.cfg["plain"] == "ON"
 
     def fx(self, key: str) -> bool:
         """An effect setting, forced off in plain (realism) mode."""
@@ -138,16 +144,12 @@ class Engine(App):
             return dim if s == "dim" else phos
         return {"dim": dim, "warn": WARN, "bad": BAD}.get(s, phos)
 
-    # ------------------------------------------------------------ lifecycle
-    def compose(self) -> ComposeResult:
-        yield Static(id="term")
-
-    def on_mount(self) -> None:
-        self.term = self.query_one("#term", Static)
+    # ------------------------------------------------------------ lifecycle (called by the host)
+    def core_start(self) -> None:
         self.set_interval(0.5, self._tick)
 
-    def on_resize(self, event: events.Resize) -> None:
-        self.render_view()
+    def core_stop(self) -> None:
+        pass
 
     def _tick(self) -> None:
         self.blink_on = not self.blink_on if self.fx("cursor_blink") else True
@@ -185,14 +187,11 @@ class Engine(App):
         self.render_view()
 
     # Ctrl+Q / Ctrl+C would drop to the shell; only an admin may do that
-    def action_quit(self) -> None:
+    def request_quit(self) -> None:
         if self.role == "ADMIN":
             self.exit()
         else:
             self.toast("LOCKED: ONLY AN ADMIN CAN EXIT")
-
-    def action_help_quit(self) -> None:
-        self.action_quit()
 
     def ui(self, fn: Callable, *args) -> None:
         """Run fn on the UI thread from a background thread. Safe while the app is shutting down."""
@@ -254,9 +253,9 @@ class Engine(App):
         self.run_worker(runner, thread=True, exclusive=False)
 
     # ------------------------------------------------------------ rendering
-    def _lr(self, left: str, right: str, width: int, style: str) -> Text:
+    def _lr(self, left: str, right: str, width: int, fg: str) -> Row:
         left = left[: max(0, width - len(right) - 1)]
-        return Text(left + " " * max(1, width - len(left) - len(right)) + right, style=style)
+        return Row(left + " " * max(1, width - len(left) - len(right)) + right, fg)
 
     def _wrap(self, text: str, width: int) -> list[str]:
         out = []
@@ -265,18 +264,20 @@ class Engine(App):
         return out
 
     def render_view(self) -> None:
-        if not self.view or not hasattr(self, "term"):
+        size = self.screen_size() if self.view else None
+        if not size:
             return
-        W, H = self.term.content_size.width, self.term.content_size.height
+        W, H = size
         if W < 10 or H < 5:
             return
         full_w, full_h = W, H
         ratio = ASPECTS.get(self.cfg.get("aspect", "FILL"))
         if ratio:
-            if W / (H * CELL_RATIO) > ratio:
-                W = max(20, round(H * CELL_RATIO * ratio))
+            cr = self.cell_ratio
+            if W / (H * cr) > ratio:
+                W = max(20, round(H * cr * ratio))
             else:
-                H = max(8, round(W / (CELL_RATIO * ratio)))
+                H = max(8, round(W / (cr * ratio)))
         pad_left = (full_w - W) // 2
         self.pad_top = (full_h - H) // 2
         v = self.view
@@ -284,14 +285,14 @@ class Engine(App):
         bright = self.style_for("")
         head = [self._lr(v.title.upper(), self.clock(), W, bright)]
         if not self.plain:
-            head.append(Text("─" * W, style=dim))
+            head.append(Row("─" * W, dim))
         foot = []
         if not self.plain:
-            foot.append(Text("─" * W, style=dim))
+            foot.append(Row("─" * W, dim))
         foot.append(self._lr(v.footer[0], v.footer[1], W, dim))
         toast = []
         if self.toast_text and time.monotonic() < self.toast_until:
-            toast.append(Text(self.toast_text[:W].upper(), style=self.style_for("warn")))
+            toast.append(Row(self.toast_text[:W].upper(), self.style_for("warn")))
         body_h = max(1, H - len(head) - len(foot) - len(toast))
         self.body_h = body_h
 
@@ -302,7 +303,7 @@ class Engine(App):
         for item in v.items:
             if isinstance(item, Line):
                 for r in self._wrap(item.text, W):
-                    fixed.append((Text(r, style=self.style_for(item.style)), None))
+                    fixed.append((Row(r, self.style_for(item.style)), None))
             elif isinstance(item, Opt):
                 fixed.append((self._opt_row(item, opt_i, W), opt_i))
                 opt_i += 1
@@ -311,7 +312,7 @@ class Engine(App):
                 shown_buf = "*" * len(item.buf) if item.mask else item.buf
                 rows = self._wrap(item.prompt + shown_buf + cur, W)
                 for r in rows:
-                    fixed.append((Text(r, style=bright), None))
+                    fixed.append((Row(r, bright), None))
             elif isinstance(item, Log):
                 log_at = len(fixed)
                 fixed.append(("LOG", None))
@@ -322,9 +323,9 @@ class Engine(App):
             lrows = []
             for ln in log_item.lines:
                 for r in self._wrap(ln.text, W):
-                    lrows.append((Text(r, style=self.style_for(ln.style)), None))
+                    lrows.append((Row(r, self.style_for(ln.style)), None))
             lrows = lrows[-space:] if space else []
-            pad = [(Text(""), None)] * (space - len(lrows))
+            pad = [(Row("", phos), None)] * (space - len(lrows))
             middle = (lrows + pad) if log_item.top else (pad + lrows)
             rows = fixed[:log_at] + middle + fixed[log_at + 1:]
 
@@ -342,35 +343,28 @@ class Engine(App):
 
         top = self.pad_top + len(head) + len(toast)
         self.row_map = {top + y: o for y, (_, o) in enumerate(shown) if o is not None}
-        rows_out = head + toast + [r for r, _ in shown] + [Text("")] * (body_h - len(shown)) + foot
-        sig = (full_w, full_h, pad_left, tuple((t.plain, str(t.style)) for t in rows_out))
+        rows_out = head + toast + [r for r, _ in shown] + [Row("", phos)] * (body_h - len(shown)) + foot
+        sig = (full_w, full_h, pad_left, self.pad_top, tuple((r.text, r.fg, r.bg, r.bold) for r in rows_out))
         if sig == self._ul_sig:
-            return  # nothing changed: skip the terminal write
+            return  # nothing changed: skip the screen write
         self._ul_sig = sig
-        if pad_left or self.pad_top:
-            margin = " " * pad_left
-            rows_out = [Text("")] * self.pad_top + [Text(margin) + r for r in rows_out]
-        out = Text()
-        for t in rows_out:
-            if CONSOLE:
-                t = Text(t.plain.translate(CONSOLE_GLYPHS), style=t.style)
-            out.append_text(t)
-            out.append("\n")
-        out.rstrip()
-        self.term.update(out)
+        self.paint(rows_out, pad_left, self.pad_top)
 
-    def _opt_row(self, o: Opt, i: int, W: int) -> Text:
+    def repaint(self) -> None:
+        """Draw again even if nothing changed (after the screen was lost or resized)."""
+        self._ul_sig = None
+        self.render_view()
+
+    def _opt_row(self, o: Opt, i: int, W: int) -> Row:
         selected = i == self.sel
         col = self.style_for(o.style)
-        if self.plain:
-            label = ("> " if selected else "  ") + (o.label if o.raw else o.label.upper())
-            style = f"bold {col}" if selected else col
-        else:
-            label = "> " + (o.label if o.raw else o.label.upper())
-            style = f"{BG} on {col}" if selected else col
+        label = (("> " if selected else "  ") if self.plain else "> ") + (o.label if o.raw else o.label.upper())
         tag = o.tag.upper()
         label = label[: max(1, W - len(tag) - 2)]
-        return Text(label + " " * max(1, W - len(label) - len(tag)) + tag, style=style)
+        text = label + " " * max(1, W - len(label) - len(tag)) + tag
+        if self.plain:
+            return Row(text, col, bold=selected)
+        return Row(text, BG, col) if selected else Row(text, col)
 
     def clock(self) -> str:
         return time.strftime("%I:%M %p" if self.cfg["clock"] == "12H" else "%H:%M")
@@ -399,15 +393,14 @@ class Engine(App):
         else:
             self.show(self.main)
 
-    def on_key(self, event: events.Key) -> None:
+    def press(self, key: str, ch=None, printable: bool = False) -> None:
+        """A key from any host (keyboard, or a touch button standing in for one)."""
         if self.view is None:
             return
-        event.stop()
-        event.prevent_default()
         if self.fx("key_clicks"):
             sound.play("click")
         try:
-            self.handle_key(event.key, event.character, event.is_printable)
+            self.handle_key(key, ch, printable)
         except Exception as e:
             self.fail(e)
 
@@ -422,15 +415,24 @@ class Engine(App):
                 if v.on_backspace and v.on_backspace():
                     return
                 self.go_back()
+            elif key == "ctrl+u":                     # clear the whole line
+                for _ in range(10000):
+                    if not (v.on_backspace and v.on_backspace()):
+                        break
             elif ch and printable and v.on_char:
                 v.on_char(ch)
             return
         if v.on_key and v.on_key(key):
             return
-        if key in ("up", "k"):
+        if key in ("up", "k", "w"):
             self.move(-1)
-        elif key in ("down", "j"):
+        elif key in ("down", "j", "s"):
             self.move(1)
+        elif key in "123456789" and len(key) == 1 and v.opts:
+            n = int(key) - 1                          # 1-9 jump straight to an option
+            if n < len(v.opts):
+                self.sel = n
+                self.activate()
         elif key == "pageup":
             self.move(-(self.body_h - 1))
         elif key == "pagedown":
@@ -440,12 +442,13 @@ class Engine(App):
                 v.on_enter()
             else:
                 self.activate()
-        elif key in ("escape", "backspace", "left"):
+        elif key in ("escape", "backspace", "left", "q"):
             self.go_back()
 
-    def on_click(self, event: events.Click) -> None:
+    def tap_row(self, row: int) -> None:
+        """A click or tap on screen row `row`: pick the option there, or ENTER for screens without options."""
         try:
-            o = self.row_map.get(event.y - 1)  # 1 = top padding
+            o = self.row_map.get(row)
             if o is not None:
                 self.sel = o
                 self.activate()
@@ -456,3 +459,83 @@ class Engine(App):
 
     def main(self) -> View:  # overridden by the app
         return View("main", "MAIN")
+
+
+# ====================================================================== text-mode host
+class Engine(EngineCore):
+    """Placeholder replaced below when Textual is installed (so the graphics mode works without it)."""
+
+
+try:
+    from rich.text import Text
+    from textual import events
+    from textual.app import App, ComposeResult
+    from textual.widgets import Static
+except ImportError:  # pragma: no cover - graphics-only install
+    App = None
+
+if App is not None:
+    class TextualHost(App):
+        """Runs the engine in a terminal through Textual."""
+        CSS = f"""
+        Screen {{ background: {BG}; }}
+        #term {{ width: 100%; height: 100%; padding: 1 2; background: {BG}; }}
+        """
+        ENABLE_COMMAND_PALETTE = False
+        interface = "TEXT"
+        touch = False
+
+        def compose(self) -> ComposeResult:
+            yield Static(id="term")
+
+        def on_mount(self) -> None:
+            self.term = self.query_one("#term", Static)
+            self.core_start()
+
+        def on_unmount(self) -> None:
+            self.core_stop()
+
+        def on_resize(self, event: events.Resize) -> None:
+            self.render_view()
+
+        def screen_size(self):
+            if not hasattr(self, "term"):
+                return None
+            return self.term.content_size.width, self.term.content_size.height
+
+        def describe_screen(self) -> str:
+            size = self.screen_size() or (0, 0)
+            return f"TEXT {size[0]}x{size[1]}"
+
+        def paint(self, rows, pad_left: int, pad_top: int) -> None:
+            out = Text()
+            for _ in range(pad_top):
+                out.append("\n")
+            margin = " " * pad_left
+            for r in rows:
+                text = r.text.translate(CONSOLE_GLYPHS) if CONSOLE else r.text
+                style = ("bold " if r.bold else "") + r.fg + (f" on {r.bg}" if r.bg else "")
+                out.append(margin)
+                out.append(text, style=style)
+                out.append("\n")
+            out.rstrip()
+            self.term.update(out)
+
+        def on_key(self, event: events.Key) -> None:
+            if self.view is None:
+                return
+            event.stop()
+            event.prevent_default()
+            self.press(event.key, event.character, event.is_printable)
+
+        def on_click(self, event: events.Click) -> None:
+            self.tap_row(event.y - 1)  # 1 = top padding
+
+        def action_quit(self) -> None:
+            self.request_quit()
+
+        def action_help_quit(self) -> None:
+            self.request_quit()
+
+    class Engine(EngineCore, TextualHost):  # noqa: F811 - the real text-mode engine
+        pass

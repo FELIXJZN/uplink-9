@@ -394,3 +394,35 @@ def test_phone_link_api(home):
         assert app.view.id == "linkqr" and any("█" in getattr(i, "text", "") for i in app.view.items)
         app.link.stop()
     run(t)
+
+
+def test_number_keys_q_and_screen_settings(home):
+    async def t(app, pilot):
+        labels = [o.label for o in app.view.opts]
+        await pilot.press(str(labels.index("HOLOTAPE") + 1))    # 1-9 jump straight to an option
+        await pilot.pause(0.2)
+        assert app.view.id == "deck"
+        await pilot.press("q")                                   # q goes back, like ESC
+        await pilot.pause(0.1)
+        assert app.view.id == "main"
+        await pick(app, pilot, "SETTINGS")
+        await pick(app, pilot, "SCREEN & TOUCH")
+        assert app.view.id == "screen"
+        await pick(app, pilot, "MODE AT START")
+        assert app.cfg["interface"] == "GRAPHICS"
+        await pick(app, pilot, "TEXT SIZE")                      # harmless in text mode
+        assert app.view.id == "screen"
+    run(t)
+
+
+def test_ctrl_u_clears_a_text_field(home):
+    async def t(app, pilot):
+        await pick(app, pilot, "MESSAGES")
+        await pick(app, pilot, app.view.opts[0].label)          # first thread
+        await pick(app, pilot, "WRITE MESSAGE")
+        await type_text(pilot, "oops")
+        await pilot.press("ctrl+u")
+        await pilot.pause(0.1)
+        assert app.view.id == "compose"
+        assert "oops" not in str(app.term.render())
+    run(t)

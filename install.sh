@@ -2,9 +2,12 @@
 # Uplink-9 installer. Run it from inside the cloned repo:
 #
 #   ./install.sh            install for this user: Python environment + the 'uplink' command
-#   ./install.sh --deps     also install system packages with apt (asks for sudo)
+#   ./install.sh --deps     also install system packages with apt, and give you access to the screen,
+#                           touchscreen and audio (asks for sudo)
 #   ./install.sh --boot     also boot straight into Uplink-9 on the device's own screen (asks for sudo)
 #   ./install.sh --uninstall
+#
+# On the device's own screen Uplink-9 runs in graphics mode (pygame) with touch; over SSH in text mode.
 #
 # Flags can be combined:  ./install.sh --deps --boot
 
@@ -22,7 +25,7 @@ DEPS=0; BOOT=0; UNINSTALL=0
 for a in "$@"; do
   case "$a" in
     --deps) DEPS=1 ;;
-    --boot) BOOT=1 ;;
+    --boot|--autostart|--autologin) BOOT=1 ;;   # the last two are v0.2's names
     --uninstall) UNINSTALL=1 ;;
     *) echo "Unknown option: $a"; exit 1 ;;
   esac
@@ -32,6 +35,11 @@ remove_profile_block() {
   if [ -f "$PROFILE_FILE" ] && grep -qF "$MARK_START" "$PROFILE_FILE"; then
     sed -i "/$MARK_START/,/$MARK_END/d" "$PROFILE_FILE"
   fi
+  # v0.2 (the first touch build) used its own block; never start the terminal twice
+  for f in "$HOME/.profile" "$HOME/.bash_profile"; do
+    [ -f "$f" ] && sed -i '/# >>> uplink-9 autostart >>>/,/# <<< uplink-9 autostart <<</d' "$f"
+  done
+  return 0
 }
 
 if [ "$UNINSTALL" = 1 ]; then
@@ -49,7 +57,10 @@ fi
 # 1. System packages (optional)
 if [ "$DEPS" = 1 ]; then
   sudo apt-get update
-  sudo apt-get install -y python3 python3-venv git udisks2 alsa-utils rsync openssh-client
+  sudo apt-get install -y python3 python3-venv python3-pygame fonts-dejavu-core git udisks2 alsa-utils rsync openssh-client
+  # the screen (video, render), touchscreen and keys (input) and sound (audio) without root
+  sudo usermod -aG video,render,input,audio "$(id -un)" 2>/dev/null || sudo usermod -aG video,input,audio "$(id -un)"
+  echo "Added you to the video, input and audio groups (takes effect after a reboot)."
   echo "Optional extras: tailscale (tailscale.com/download), croc (sudo apt install croc), twingate."
 fi
 
@@ -58,7 +69,8 @@ command -v git >/dev/null || echo "Note: git is missing, so firmware updates won
 
 # 2. Python environment
 if [ ! -x "$REPO/.venv/bin/python" ]; then
-  python3 -m venv "$REPO/.venv" || { echo "Could not create the Python environment. Run: ./install.sh --deps"; exit 1; }
+  # --system-site-packages: use the apt pygame (built for this device's screen) instead of a download
+  python3 -m venv --system-site-packages "$REPO/.venv" || { echo "Could not create the Python environment. Run: ./install.sh --deps"; exit 1; }
 fi
 "$REPO/.venv/bin/python" -m pip install -q --upgrade pip
 "$REPO/.venv/bin/python" -m pip install -q -r "$REPO/requirements.txt"

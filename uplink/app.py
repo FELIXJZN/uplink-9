@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import __version__, version_label, audio, auth, link, sound, storage, system, updater, webhooks
-from .engine import ASPECTS, Engine, Input, Line, Log, Opt, View
+from .engine import ASPECTS, Engine, EngineCore, Input, Line, Log, Opt, View
 from .tapes import BUILTIN_TAPES
 
 SPEED = {"SLOW": 0.04, "NORMAL": 0.015, "FAST": 0.006, "INSTANT": 0}
@@ -61,10 +61,13 @@ def qr_rows(text: str, error: str = "m") -> list[str]:
     return out
 
 
-class Uplink(Engine):
-    def __init__(self, after_update: bool = False):
+class UplinkCore(EngineCore):
+    """Every Uplink-9 screen. Runs on either host: Uplink (text mode) or gui.make_touch_app() (graphics/touch)."""
+
+    def __init__(self, after_update: bool = False, no_boot: bool = False):
         super().__init__()
         self.after_update = after_update
+        self.no_boot = no_boot
         self.drives: list[system.Drive] = []
         self.node_state: dict[str, dict] = {}
         self.vpn_info = None
@@ -76,13 +79,17 @@ class Uplink(Engine):
         self.link = link.LinkServer(self)
 
     # ================================================================ startup
-    def on_mount(self) -> None:
-        super().on_mount()
+    def core_start(self) -> None:
+        super().core_start()
         threading.Thread(target=sound.warm, daemon=True).start()
+        if self.no_boot:                      # uplink --no-boot (and the restart after an update)
+            self.show(self.boot_screen)
+            self.finish_boot()
+            return
         self.show(self.boot_screen)
         self.bg(self.collect_boot_facts, self.start_boot_animation)
 
-    def on_unmount(self) -> None:
+    def core_stop(self) -> None:
         self._ul_stop.set()
         self.link.stop()
 
@@ -105,9 +112,11 @@ class Uplink(Engine):
             dots("CORE " + info.get("MODEL", "?")[:18], "OK"),
             dots("MEMORY " + info.get("MEMORY", "?"), "OK"),
             dots("STORAGE " + info.get("STORAGE", "?"), "OK"),
+            dots("DISPLAY", self.describe_screen()),
             dots("USB DRIVES", str(len(drives))),
             dots("MICROPHONE", "OK" if self.mic_ok else "NONE"),
             dots("TAILNET", ts_state),
+            *(["", "! " + self.boot_notice] if getattr(self, "boot_notice", "") else []),
             "",
             f"WELCOME BACK, {user}.",
         ]
@@ -183,7 +192,7 @@ class Uplink(Engine):
         if self.cfg["link"] == "ON":
             self.start_link(quiet=True)
         if self.cfg["update_check_boot"] == "ON" and updater.is_git():
-            self.bg(lambda: updater.check(self.cfg["update_branch"]), self.boot_update_result)
+            self.bg(lambda: updater.check(self.cfg["update_branch"], self.cfg["update_channel"]), self.boot_update_result)
 
     def boot_update_result(self, info) -> None:
         if isinstance(info, dict) and info.get("ok") and info.get("behind"):
@@ -868,7 +877,7 @@ class Uplink(Engine):
 
         def screen():
             page = max(1, self.body_h - 1)
-            width = max(10, self.term.content_size.width if hasattr(self, "term") else 60)
+            width = max(10, (self.screen_size() or (60, 0))[0])
             rows: list[str] = []
             i = st["off"]
             while i < len(lines) and len(rows) < page:   # wrap long lines so nothing falls off the bottom
@@ -960,11 +969,25 @@ class Uplink(Engine):
         items.append(Line(""))
         if d.mountpoint:
             items.append(Opt("OPEN FILES", lambda: self.open_dir(Path(d.mountpoint))))
+            items.append(Opt("IMPORT HOLOTAPES", lambda: self.import_tapes(d), "FROM USB"))
             items.append(Opt("UNMOUNT", lambda: self.usb_action(d, system.unmount, "UNMOUNTED")))
         else:
             items.append(Opt("MOUNT AND OPEN", lambda: self.mount_then(d, self.open_dir)))
         items.append(Opt("EJECT SAFELY", lambda: self.usb_action(d, system.eject, "SAFE TO REMOVE"), style="warn"))
         return View("drive", "USB // " + d.name, items, back=lambda: self.show(self.usb))
+
+    def import_tapes(self, d) -> None:
+        """Tapes exported to this drive (by this device, another Uplink-9, or v0.2) go into the deck."""
+        def done(n):
+            if isinstance(n, Exception):
+                self.sfx("buzz")
+                self.toast("IMPORT FAILED: " + str(n)[:40])
+                return
+            self.user_tapes = storage.load_tapes()
+            self.sfx("chirp" if n else "clack")
+            self.toast(f"{n} NEW HOLOTAPE{'S' if n != 1 else ''} IMPORTED" if n else "NO NEW HOLOTAPES ON THIS DRIVE")
+        self.toast("READING DRIVE...")
+        self.bg(lambda: storage.import_usb_tapes(Path(d.mountpoint)), done)
 
     def usb_action(self, d, fn, ok_text, after=None) -> None:
         self.toast("WORKING...")
@@ -1146,8 +1169,8 @@ class Uplink(Engine):
             text = st["buf"].strip()
             if not text:
                 return
-            self.show(lambda: self.thread(t))
             self.send_message(t, text)
+            self.show(lambda: self.thread(t))   # after sending, so the new message is on screen
 
         self.show(lambda: View("compose", "TO: " + t["name"], [
             Log([self.msg_line(m, t["name"]) for m in t["msgs"][-6:]]), Line(""), Input("YOU> ", st["buf"]),
@@ -1615,6 +1638,8 @@ class Uplink(Engine):
             self.cycle("DISPLAY COLOR", "color", ["GREEN", "AMBER", "WHITE", "BLUE"], self.settings,
                        "GREEN (PLAIN)" if self.plain else ""),
             self.cycle("ASPECT RATIO", "aspect", list(ASPECTS), self.settings),
+            Opt("SCREEN & TOUCH", lambda: self.show(self.screen_settings),
+                self.interface + (" · TOUCH" if self.touch else "")),
             Opt("ACCESSIBILITY", lambda: self.show(self.accessibility), "PLAIN" if self.plain else "EFFECTS ON"),
             self.cycle("CLOCK", "clock", ["24H", "12H"], self.settings),
             Opt("WEBHOOKS", self.admin_only(lambda: self.show(self.webhooks)),
@@ -1634,6 +1659,41 @@ class Uplink(Engine):
                 "YES, RESTORE", self.restore_defaults, lambda: self.show(self.settings))), self.lock_tag(), self.lock_style()),
             Opt("ABOUT THIS DEVICE", lambda: self.show(self.about)),
         ], footer=(self.role, "[ESC] BACK"))
+
+    def screen_settings(self) -> View:
+        s = self.screen_settings
+        gfx = self.interface == "GRAPHICS"
+
+        def live(o: Opt) -> Opt:
+            def go():
+                o.go()
+                self.apply_screen()
+            return Opt(o.label, go, o.tag)
+        gfx_note = "" if gfx else "GRAPHICS ONLY"
+        return View("screen", "SETTINGS // SCREEN & TOUCH", [
+            Line(f"NOW: {self.interface} MODE, {self.describe_screen()}", "dim"), Line(""),
+            self.cycle("MODE AT START", "interface", ["AUTO", "GRAPHICS", "TEXT"], s),
+            Line("AUTO: GRAPHICS ON THE DEVICE'S OWN SCREEN, TEXT OVER SSH. TAKES EFFECT AFTER A RESTART.", "dim"),
+            live(self.cycle("TOUCH CONTROLS", "touch", ["AUTO", "ON", "OFF"], s)),
+            Line("AUTO: ON WHEN A TOUCHSCREEN IS FOUND, OR AT THE FIRST TOUCH.", "dim"),
+            live(self.cycle("TEXT SIZE", "text_size", ["AUTO", "SMALL", "LARGE"], s, gfx_note)),
+            live(self.cycle("SCANLINES", "scanlines", ["ON", "OFF"], s, gfx_note or ("OFF (PLAIN)" if self.plain else ""))),
+            self.cycle("FULL SCREEN", "fullscreen", ["AUTO", "ON", "OFF"], s, gfx_note),
+            Line(""),
+            Opt("RESTART TERMINAL NOW", self.admin_only(lambda: self.exit("restart")), self.lock_tag(), self.lock_style()),
+        ], back=lambda: self.show(self.settings))
+
+    def apply_screen(self) -> None:
+        """Graphics mode: use new touch / text size settings straight away."""
+        if self.interface != "GRAPHICS" or getattr(self, "display", None) is None:
+            return
+        from . import touch
+        want = self.cfg["touch"]
+        self.touch_setting = want
+        on = want == "ON" or (want == "AUTO" and (self.touch or bool(touch.detect())))
+        self.touch = on
+        self._fonts()
+        self.repaint()
 
     def lock_style(self) -> str:
         return "" if self.role == "ADMIN" else "dim"
@@ -1869,12 +1929,18 @@ class Uplink(Engine):
         items = [
             Line("INSTALLED: " + version_label(__version__) + (f" ({updater.commit()})" if updater.commit() else "")),
             Line("SOURCE:    " + (updater.remote_url() or "NONE"), "dim"),
-            Line("BRANCH:    " + self.cfg["update_branch"].upper(), "dim"), Line(""),
+            Line("CHANNEL:   " + ("TAGGED RELEASES" if self.cfg["update_channel"] == "RELEASES"
+                                  else "EVERY COMMIT ON " + self.cfg["update_branch"].upper()), "dim"), Line(""),
             Opt("CHECK FOR UPDATE", self.check_fw),
             self.cycle("CHECK AT BOOT", "update_check_boot", ["ON", "OFF"], self.firmware),
-            Opt("CHANGE BRANCH", lambda: self.prompt("FIRMWARE // BRANCH", "BRANCH TO UPDATE FROM", self.set_branch,
-                                                     lambda: self.show(self.firmware), self.cfg["update_branch"])),
+            self.cycle("UPDATE CHANNEL", "update_channel", ["RELEASES", "BRANCH"], self.firmware),
         ]
+        if self.cfg["update_channel"] == "BRANCH":
+            items.append(Opt("CHANGE BRANCH", lambda: self.prompt("FIRMWARE // BRANCH", "BRANCH TO UPDATE FROM", self.set_branch,
+                                                                  lambda: self.show(self.firmware), self.cfg["update_branch"]),
+                             self.cfg["update_branch"].upper()))
+        else:
+            items.append(Line("RELEASES: ONLY VERSIONS TAGGED ON GITHUB. SAFEST.", "dim"))
         if prev:
             items.append(Opt("ROLL BACK", lambda: self.confirm("CONFIRM", f"ROLL BACK TO {prev}?", "THE TERMINAL RESTARTS.",
                                                                "YES, ROLL BACK", lambda: self.do_rollback(prev),
@@ -1904,7 +1970,8 @@ class Uplink(Engine):
                 return
             if not info["behind"]:
                 self.update_info = None
-                self.message("FIRMWARE // CHECK", ["YOUR FIRMWARE IS UP TO DATE.", Line(f"{version_label(__version__)} · {updater.commit()}", "dim")], back)
+                self.message("FIRMWARE // CHECK", ["YOUR FIRMWARE IS UP TO DATE.", Line(f"{version_label(__version__)} · {updater.commit()}", "dim")]
+                             + ([Line(info["note"], "dim")] if info.get("note") else []), back)
                 return
             self.update_info = info
             self.sfx("chirp")
@@ -1915,7 +1982,7 @@ class Uplink(Engine):
                 Opt("INSTALL " + version_label(info["version"]), self.install_fw, style="warn"),
                 Opt("NOT NOW", back),
             ], back=back))
-        self.bg(lambda: updater.check(self.cfg["update_branch"]), done)
+        self.bg(lambda: updater.check(self.cfg["update_branch"], self.cfg["update_channel"]), done)
 
     def install_fw(self) -> None:
         phases = ["DOWNLOADING", "VERIFYING", "INSTALLING", "REBOOTING"]
@@ -1929,10 +1996,10 @@ class Uplink(Engine):
             return View("flash", "FIRMWARE // INSTALL", rows + tail, locked=not st["failed"],
                         back=lambda: self.show(self.firmware), footer=("INSTALLING" if not st["failed"] else "", ""))
         self.show(screen)
-        branch = self.cfg["update_branch"]
+        branch, channel = self.cfg["update_branch"], self.cfg["update_channel"]
 
         def work():
-            info = updater.check(branch)                       # downloading
+            info = updater.check(branch, channel)              # downloading
             if not info.get("ok"):
                 return False, info.get("error", "FETCH FAILED"), ""
             self.ui(lambda: (st.update(ph=1), self.redraw()))
@@ -1940,7 +2007,9 @@ class Uplink(Engine):
                 return False, "LOCAL CHANGES FOUND. COMMIT OR DISCARD THEM FIRST.", ""
             time.sleep(0.4)
             self.ui(lambda: (st.update(ph=2), self.redraw()))
-            ok, msg, prev = updater.install(branch)             # installing
+            if not info.get("behind"):
+                return False, "NOTHING TO INSTALL: ALREADY UP TO DATE.", ""
+            ok, msg, prev = updater.install(branch, info.get("target", ""))   # installing
             if ok:
                 self.cfg["previous_commit"] = prev
                 self.cfg.save()
@@ -1977,7 +2046,8 @@ class Uplink(Engine):
         for k, v in system.sysinfo():
             rows.append(Line(f"{k:<10} {v}"))
         rows += [Line(f"{'FIRMWARE':<10} {version_label(__version__)} {updater.commit()}"),
-                 Line(f"{'MIC':<10} {'YES' if self.mic_ok else 'NONE'}"), Line(""),
+                 Line(f"{'MIC':<10} {'YES' if self.mic_ok else 'NONE'}"),
+                 Line(f"{'SCREEN':<10} {self.interface} {self.describe_screen()}"), Line(""),
                  Line("CONFIG " + str(storage.Config.path), "dim"), Line("DATA   " + str(storage.DATA_DIR), "dim")]
         return View("about", "SETTINGS // ABOUT", rows, back=lambda: self.show(self.settings), on_enter=lambda: None)
 
@@ -2004,3 +2074,7 @@ class Uplink(Engine):
         ok, out = system.power(action)
         if not ok:
             self.toast("FAILED: " + (out.splitlines()[-1][:50] if out else "?"), 8)
+
+
+class Uplink(UplinkCore, Engine):
+    """Uplink-9 in text mode (terminals, SSH, Windows)."""
