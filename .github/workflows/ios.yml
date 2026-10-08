@@ -52,6 +52,20 @@ jobs:
           cd "$RUNNER_TEMP/ipa" && zip -qry "$GITHUB_WORKSPACE/mobile/Uplink9.ipa" Payload
           ls -la "$GITHUB_WORKSPACE/mobile/Uplink9.ipa"
 
+      - name: Check what's inside
+        run: |
+          APP="$RUNNER_TEMP/ipa/Payload/Uplink9.app"
+          echo "::notice title=Build::$(grep -E 'ARCHIVE (SUCCEEDED|FAILED)' build.log | tail -1) · log $(wc -l < build.log) lines · $(grep -c 'warning:' build.log || true) warnings"
+          echo "::notice title=iPhone app::$(du -sh "$APP" | cut -f1) · $(lipo -archs "$APP/Uplink9") · version $(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Info.plist") ($(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$APP/Info.plist")) · $(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Info.plist")"
+          if [ -d "$APP/Watch" ]; then
+            W=$(ls -d "$APP"/Watch/*.app | head -1)
+            echo "::notice title=Watch app::$(basename "$W") · $(du -sh "$W" | cut -f1) · $(lipo -archs "$W/$(basename "$W" .app)")"
+          else
+            echo "::warning title=Watch app::not inside the iPhone app"
+          fi
+          echo "::notice title=File::Uplink9.ipa $(du -h "$GITHUB_WORKSPACE/mobile/Uplink9.ipa" | cut -f1)"
+          grep -E 'warning:' build.log | grep -v 'appintentsmetadataprocessor' | sed -E 's/.*warning: //' | sort -u | head -8 | while read -r w; do echo "::warning title=Compiler::$w"; done
+
       - name: Keep the .ipa
         uses: actions/upload-artifact@v4
         with:
