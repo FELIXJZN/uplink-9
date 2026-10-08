@@ -12,7 +12,7 @@ settings:
   base:
     # Change this to your own reverse-domain ID before the first TestFlight upload,
     # or set the BUNDLE_ID variable in GitHub (see README).
-    UPLINK_BUNDLE_ID: com.example.uplink9
+    UPLINK_BUNDLE_ID: be.4rden.uplink9
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "0.12"
     CURRENT_PROJECT_VERSION: "1"
