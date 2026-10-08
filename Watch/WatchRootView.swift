@@ -59,7 +59,7 @@ struct WatchRootView: View {
         if let s = store.snapshot {
             TermText(s.device, .dim)
             TermText(s.condition, s.condition == "NOMINAL" ? .normal : (s.condition == "NO LINK" ? .warn : .bad), bold: true)
-            if let b = s.battery { TermText("BAT  [\(bar(Double(b), width: 6))] \(b)%") }
+            if let b = s.battery { TermText("BAT  [\(bar(Double(b), width: 6))] \(b)%", b < 15 ? .bad : (b < 25 ? .warn : .normal)) }
             if let t = s.temp { TermText(String(format: "TEMP %.0f°C", t), t >= 75 ? .bad : .normal) }
             if let l = s.load { TermText("LOAD [\(bar(l, width: 6))] \(Int(l))%") }
         } else {

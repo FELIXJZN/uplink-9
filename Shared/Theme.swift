@@ -154,3 +154,11 @@ func gaugeLine(_ label: String, _ percent: Double?, _ value: String) -> (String,
     let style: LineStyle = percent >= 90 ? .bad : percent >= 75 ? .warn : .normal
     return ("\(padded) [\(bar(percent))] \(value)", style)
 }
+
+/// Battery is the other way round: low is the problem, not high.
+func batteryLine(_ label: String, _ percent: Int?, charging: Bool) -> (String, LineStyle) {
+    let padded = label.padding(toLength: 9, withPad: " ", startingAt: 0)
+    guard let percent else { return ("\(padded) NO SENSOR", .dim) }
+    let style: LineStyle = charging ? .normal : (percent < 15 ? .bad : (percent < 25 ? .warn : .normal))
+    return ("\(padded) [\(bar(Double(percent)))] \(percent)%" + (charging ? " +" : ""), style)
+}

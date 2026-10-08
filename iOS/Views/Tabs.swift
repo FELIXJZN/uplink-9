@@ -12,7 +12,7 @@ struct VitalsTab: View {
             TermText("")
             TermText("THIS PHONE", .dim)
             let p = store.phone
-            line(gaugeLine("BATTERY", p.battery.map { Double($0) }, p.battery.map { "\($0)%" + (p.charging ? " +" : "") } ?? ""))
+            line(batteryLine("BATTERY", p.battery, charging: p.charging))
             line(gaugeLine("THERMAL", p.thermalPercent, p.thermal))
             if p.diskTotal > 0 {
                 line(gaugeLine("STORAGE", Double(p.diskTotal - p.diskFree) / Double(p.diskTotal) * 100, human(p.diskFree) + " FREE"))
@@ -35,8 +35,7 @@ struct VitalsTab: View {
         case .online:
             if let s = store.status {
                 let v = s.vitals
-                let bat = v.battery.map { Double($0) }
-                line(gaugeLine("BATTERY", bat, v.battery.map { "\($0)%" + (v.charging ? " +" : "") } ?? ""))
+                line(batteryLine("BATTERY", v.battery, charging: v.charging))
                 line(gaugeLine("CPU TEMP", v.temp.map { min(100, $0 / 85 * 100) }, v.temp.map { String(format: "%.0f°C", $0) } ?? ""))
                 line(gaugeLine("CPU LOAD", v.load, String(format: "%.0f%%", v.load)))
                 if let used = v.memUsed, let total = v.memTotal, total > 0 {
